@@ -1,7 +1,14 @@
 # Evaluation pipeline:
-#   Test data ──► run eval script ──► check against expected result ──► result %
-#                                          ▲
-#   Expected result ───────────────────────┘
+#   Test data ──► detect ──► combine ──► strip ──► check against expected result ──► result %
+#                                                       ▲
+#   Expected result ────────────────────────────────────┘
+#
+#   detect   solution/detect.py         кандидати з type, text, metadata.source (ner | regex_persons | rules | crf)
+#   combine  solution/combine.py        злиття кандидатів і псевдоніми з номерами (ОСОБА_1 …) + pseudonymized
+#   strip    scripts/to_submission.py   лише id, start, end, pseudonym — формат data/evaluate.py
+#
+# Режим 2 (model + regex) на одному runner-і йде ~58 хв, тому detect ділиться на SHARDS паралельних job-ів
+# (кожен бере кожне SHARDS-те рішення), а evaluate склеює їхні кандидати. Режим 1 (only regex) — одразу в evaluate.
 name: Evaluation
 
 on:
@@ -14,18 +21,77 @@ on:
         description: "Fail the run if the score (%) is below this value"
         required: false
         default: ""
+      use_model:
+        description: "Mode 2: model + regex (off = mode 1: only regex)"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
+# новий push скасовує застарілий запуск того самого PR / гілки
+concurrency:
+  group: evaluation-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   TEST_DATA: data/test/court_cases.jsonl   # contains both the inputs and the expected annotations
-  SOLUTION: solution/predict.py            # entry point: python $SOLUTION <inputs.jsonl> <submission.jsonl>
+  MODE: ${{ (github.event_name != 'workflow_dispatch' || inputs.use_model) && 'full' || 'regex' }}
+  SHARDS: 8                                # має збігатися з matrix.shard нижче
 
 jobs:
-  evaluate:
+  detect:
+    name: Detect (mode 2, shard ${{ matrix.shard }})
+    if: github.event_name != 'workflow_dispatch' || inputs.use_model
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: true
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: solution/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r solution/requirements.txt
+
+      - name: Cache spaCy model
+        uses: actions/cache@v5
+        with:
+          path: solution/models/spacy
+          key: spacy-uk_ner_web_trf_13class
+
+      - name: Download spaCy model
+        run: python solution/download_models.py
+
+      - name: Prepare test data shard (hide expected result from the flow)
+        run: |
+          mkdir -p out
+          python scripts/split_test_data.py "$TEST_DATA" out/inputs.jsonl
+          awk -v i=${{ matrix.shard }} -v n="$SHARDS" '(NR - 1) % n == i' out/inputs.jsonl > out/inputs-shard.jsonl
+          wc -l out/inputs-shard.jsonl
+
+      - name: Detect
+        run: python solution/detect.py out/inputs-shard.jsonl out/candidates-${{ matrix.shard }}.jsonl --mode full
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: candidates-shard-${{ matrix.shard }}
+          path: out/candidates-${{ matrix.shard }}.jsonl
+          retention-days: 3
+
+  evaluate:
+    needs: detect
+    # detect пропущено в режимі 1; в режимі 2 мають успішно завершитися всі шарди
+    if: always() && contains(fromJSON('["success", "skipped"]'), needs.detect.result)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
 
@@ -33,20 +99,41 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          for f in requirements.txt solution/requirements.txt; do
-            if [ -f "$f" ]; then pip install -r "$f"; fi
-          done
-
-      - name: Prepare test data (hide expected result from the solution)
+      - name: Prepare test data (hide expected result from the flow)
         run: |
           mkdir -p out
           python scripts/split_test_data.py "$TEST_DATA" out/inputs.jsonl
 
-      - name: Run eval script
-        run: python "$SOLUTION" out/inputs.jsonl out/submission.jsonl
+      - name: Check staged flow matches predict.py (regex mode)
+        run: |
+          python solution/predict.py out/inputs.jsonl out/predict-regex.jsonl --mode regex
+          python solution/detect.py out/inputs.jsonl out/candidates-regex.jsonl --mode regex
+          python solution/combine.py out/candidates-regex.jsonl out/linked-regex.jsonl
+          python scripts/to_submission.py out/linked-regex.jsonl out/submission-regex.jsonl
+          cmp out/predict-regex.jsonl out/submission-regex.jsonl
+
+      - uses: actions/download-artifact@v7
+        if: env.MODE == 'full'
+        with:
+          pattern: candidates-shard-*
+          path: out/shards
+          merge-multiple: true
+
+      - name: Detect
+        run: |
+          if [ "$MODE" = full ]; then
+            cat out/shards/candidates-*.jsonl > out/candidates.jsonl
+          else
+            python solution/detect.py out/inputs.jsonl out/candidates.jsonl --mode regex
+          fi
+          echo "$(wc -l < out/candidates.jsonl) of $(wc -l < out/inputs.jsonl) documents"
+          [ "$(wc -l < out/candidates.jsonl)" -eq "$(wc -l < out/inputs.jsonl)" ]
+
+      - name: Combine (merge and number pseudonyms)
+        run: python solution/combine.py out/candidates.jsonl out/linked.jsonl
+
+      - name: Strip extra fields for evaluation
+        run: python scripts/to_submission.py out/linked.jsonl out/submission.jsonl
 
       - name: Check against expected result
         run: python data/evaluate.py "$TEST_DATA" out/submission.jsonl --json > out/result.json
@@ -58,13 +145,16 @@ jobs:
           args=()
           if [ -n "$MIN_SCORE" ]; then args+=(--min-score "$MIN_SCORE"); fi
           set -o pipefail
+          echo "Mode: \`$MODE\`" >> "$GITHUB_STEP_SUMMARY"
           python scripts/report.py out/result.json "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: evaluation-results
+          name: evaluation-results-${{ env.MODE }}
           path: |
+            out/candidates.jsonl
+            out/linked.jsonl
             out/submission.jsonl
             out/result.json
           if-no-files-found: ignore
