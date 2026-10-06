@@ -1,64 +1,78 @@
 #!/usr/bin/env python3
-"""Базове рішення: знаходить персональні дані регулярними виразами.
+"""Псевдонімізатор: python solution/predict.py inputs.jsonl submission.jsonl
 
-Запуск:
-    python solution/predict.py inputs.jsonl submission.jsonl
+Вхід — JSON Lines з полями id та original. Вихід — JSON Lines {"id", "annotations": [{start, end, pseudonym}]}
+(позиції символів у original, end не включно), формат data/evaluate.py.
 
-Вхід — JSON Lines з полями id та original. Вихід — JSON Lines у форматі з annotations
-(див. data/evaluate.py). Замініть цей файл своїм рішенням, зберігши той самий інтерфейс.
+Режими (--mode):
+  full  (типово) — нейромережа spaCy для імен + regex-правила + CRF для НОМЕР/ІНФОРМАЦІЯ/АДРЕСА.
+                   Модель шукається локально, за потреби завантажується з Hugging Face (~1,3 ГБ, один раз).
+  regex          — лише правила та словник імен: без нейромережі, без CRF, швидко, без завантажень.
 """
+import argparse
 import json
-import re
 import sys
+import threading
+import time
+from pathlib import Path
 
-UP = "А-ЯІЇЄҐ"
-LO = "а-яіїєґ'’ʼ"
-SURNAME = rf"[{UP}][{LO}]+(?:-[{UP}][{LO}]+)?"
-PATTERNS = [
-    # Прізвище Ім'я По батькові
-    ("ОСОБА", re.compile(rf"\b{SURNAME}\s+[{UP}][{LO}]+\s+[{UP}][{LO}]+(?:вич|вна|ович|івна|ївна|овича|івни|ївни|овичу|івні|ївні|овичем|івною|ївною)\b")),
-    # Прізвище І.Б.
-    ("ОСОБА", re.compile(rf"\b{SURNAME}\s+[{UP}]\.\s?[{UP}]\.")),
-    # І.Б. Прізвище
-    ("ОСОБА", re.compile(rf"\b[{UP}]\.\s?[{UP}]\.\s?{SURNAME}")),
-    # Адреса: вулиця і номер будинку
-    ("АДРЕСА", re.compile(rf"\b(?:вул|вулиця|просп|проспект|пров|провулок|бульв|бульвар)\.?\s+[{UP}0-9][^,;\n]{{1,40}},\s*(?:буд\.?\s*)?\d+[{LO}А-Я]?(?:,\s*кв\.?\s*\d+)?")),
-    # Телефони, РНОКПП, номери документів
-    ("НОМЕР", re.compile(r"(?<![\d/])(?:\+?38\s?)?\(?0\d{2}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}(?!\d)")),
-    ("НОМЕР", re.compile(r"(?<![\d/-])\d{10}(?![\d/-])")),
-    ("НОМЕР", re.compile(rf"\b[{UP}]{{2}}\s?\d{{6}}\b")),
-]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
-def predict(text: str) -> list[dict]:
-    found = []
-    for kind, pattern in PATTERNS:
-        for m in pattern.finditer(text):
-            if not any(m.start() < e and s < m.end() for s, e, _ in found):
-                found.append((m.start(), m.end(), kind))
-    found.sort()
-    # однаковий текст — однаковий псевдонім
-    labels: dict[tuple[str, str], str] = {}
-    counts: dict[str, int] = {}
-    anns = []
-    for s, e, kind in found:
-        key = (kind, text[s:e])
-        if key not in labels:
-            counts[kind] = counts.get(kind, 0) + 1
-            labels[key] = f"{kind}_{counts[kind]}"
-        anns.append({"start": s, "end": e, "pseudonym": labels[key]})
-    return anns
-
-
-def main() -> None:
-    if len(sys.argv) != 3:
-        sys.exit(__doc__)
-    src, dst = sys.argv[1:]
-    with open(src, encoding="utf-8-sig") as fin, open(dst, "w", encoding="utf-8") as fout:
-        for line in fin:
+def read_rows(path):
+    with open(path, encoding="utf-8-sig") as f:
+        for line in f:
             if line.strip():
-                row = json.loads(line)
-                fout.write(json.dumps({"id": row["id"], "annotations": predict(row["original"])}, ensure_ascii=False) + "\n")
+                yield json.loads(line)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("inputs")
+    ap.add_argument("submission")
+    ap.add_argument("--mode", choices=["full", "regex"], default="full")
+    ap.add_argument("--model-dir", help="тека моделі spaCy (інакше пошук/завантаження автоматично)")
+    ap.add_argument("--chunk-chars", type=int, default=0,
+                    help="ділити довгі тексти на шматки такого розміру для нейромережі (економія пам'яті; 0 = вимкнено)")
+    ap.add_argument("--stats", action="store_true", help="надрукувати повний час і пік пам'яті (потрібен psutil)")
+    args = ap.parse_args()
+
+    peak = [0]
+    stop = [False]
+    if args.stats:
+        try:
+            import psutil
+            proc = psutil.Process()
+
+            def watch():
+                while not stop[0]:
+                    peak[0] = max(peak[0], proc.memory_info().rss)
+                    time.sleep(0.5)
+            threading.Thread(target=watch, daemon=True).start()
+        except ImportError:
+            print("psutil не встановлено: пам'ять не вимірюється", file=sys.stderr)
+
+    t0 = time.time()
+    if args.mode == "regex":
+        from pseudonymizer.regex_only import annotate
+        annotate_fn = annotate
+    else:
+        from pseudonymizer import Pseudonymizer
+        annotate_fn = Pseudonymizer(model_dir=args.model_dir, chunk_chars=args.chunk_chars)
+
+    n = 0
+    with open(args.submission, "w", encoding="utf-8") as out:
+        for row in read_rows(args.inputs):
+            out.write(json.dumps({"id": row["id"], "annotations": annotate_fn(row["original"])}, ensure_ascii=False) + "\n")
+            n += 1
+            if n % 20 == 0:
+                print(f"{n} рішень, {time.time() - t0:.0f} с", file=sys.stderr, flush=True)
+    stop[0] = True
+    el = time.time() - t0
+    msg = {"docs": n, "total_seconds": round(el, 1), "seconds_per_doc": round(el / max(1, n), 3)}
+    if peak[0]:
+        msg["peak_rss_gb"] = round(peak[0] / 1e9, 2)
+    print(json.dumps(msg), file=sys.stderr)
 
 
 if __name__ == "__main__":

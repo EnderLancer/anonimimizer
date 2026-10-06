@@ -7,3 +7,10 @@ venv/
 
 # OS / editor
 .DS_Store
+
+# Project
+out/
+solution/models/spacy/
+solution/training/*.pkl
+*.pkl
+ner_cache*.json
