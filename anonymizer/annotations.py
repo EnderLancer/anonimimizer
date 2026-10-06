@@ -1,17 +1,17 @@
 """Спільний формат анотацій для всіх етапів.
 
-Кожен етап пише JSON Lines, один рядок на документ:
+RegEx і Model пишуть JSON Lines, один рядок на документ, без номерів псевдонімів:
 
     {"id": 116075957,
      "original": "У травні 2018 року Іваненко Іван Іванович звернувся ...",
      "metadata": {"stage": "regex"},
      "annotations": [
-        {"start": 19, "end": 42, "pseudonym": "ОСОБА_1", "type": "ОСОБА",
-         "text": "Іваненко Іван Іванович", "metadata": {"source": "regex", "rule": "person_full_name"}}
+        {"start": 19, "end": 42, "type": "ОСОБА", "text": "Іваненко Іван Іванович",
+         "metadata": {"source": "regex", "rule": "person_full_name"}}
      ]}
 
-start, end, pseudonym — те, що читає data/evaluate.py, тож вихід кожного етапу можна оцінити окремо.
-Решта полів — для наступних етапів і для аналізу помилок.
+solution/link.py об'єднує їх і дописує кожній анотації pseudonym з номером ("ОСОБА_1").
+scripts/to_submission.py лишає з цього тільки id та start, end, pseudonym — формат data/evaluate.py.
 """
 from __future__ import annotations
 
@@ -37,14 +37,15 @@ class Hidden:
     def overlaps(self, other: "Hidden") -> bool:
         return self.start < other.end and other.start < self.end
 
-    def to_dict(self, pseudonym: str) -> dict:
-        return {"start": self.start, "end": self.end, "pseudonym": pseudonym, "type": self.type,
-                "text": self.text, "metadata": self.metadata}
+    def to_dict(self, pseudonym: str | None = None) -> dict:
+        d = {"start": self.start, "end": self.end, "type": self.type, "text": self.text, "metadata": self.metadata}
+        if pseudonym:
+            d["pseudonym"] = pseudonym
+        return d
 
     @classmethod
     def from_dict(cls, d: dict, original: str) -> "Hidden":
-        kind = d.get("type") or d["pseudonym"].strip().rsplit("_", 1)[0]
-        return cls(d["start"], d["end"], kind, d.get("text", original[d["start"]:d["end"]]), d.get("metadata", {}))
+        return cls(d["start"], d["end"], d["type"], d.get("text", original[d["start"]:d["end"]]), d.get("metadata", {}))
 
 
 def read_jsonl(path: str) -> list[dict]:
@@ -58,7 +59,8 @@ def write_jsonl(path: str, rows) -> None:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-def document_row(doc_id, original: str, hidden: list[Hidden], labels: dict[Hidden, str], metadata: dict) -> dict:
+def document_row(doc_id, original: str, hidden: list[Hidden], metadata: dict,
+                 labels: dict[Hidden, str] | None = None) -> dict:
     hidden = sorted(hidden, key=lambda h: h.start)
     return {"id": doc_id, "original": original, "metadata": metadata,
-            "annotations": [h.to_dict(labels[h]) for h in hidden]}
+            "annotations": [h.to_dict(labels[h] if labels else None) for h in hidden]}

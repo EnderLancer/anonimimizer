@@ -2,11 +2,12 @@
 """Hidden values at positions -> Mapping values -> Link results -> Cleaned document.
 
 Запуск:
-    python solution/link.py submission.jsonl regex.jsonl model.jsonl
+    python solution/link.py linked.jsonl regex.jsonl model.jsonl
 
-Об'єднує анотації етапів (за перетину перемагає файл, указаний раніше), дає однакові псевдоніми
-однаковим значенням і пише анотації разом з очищеним документом (поле pseudonymized).
-Документ, якого немає в одному з файлів, береться з решти.
+Об'єднує анотації етапів (за перетину перемагає файл, указаний раніше), нумерує псевдоніми так,
+що однакові значення отримують однаковий номер (ОСОБА_1, ОСОБА_2, …), і пише анотації разом
+з очищеним документом (поле pseudonymized). Документ, якого немає в одному з файлів, береться з решти.
+Для data/evaluate.py результат спершу проганяють через scripts/to_submission.py.
 """
 import os
 import sys
@@ -34,7 +35,7 @@ def main() -> None:
         found = [[Hidden.from_dict(a, original) for a in r["annotations"]] for r in rows_of_doc]
         hidden = pipeline.merge(*found, priority=priority)
         labels = mapping.assign(hidden)
-        row = document_row(doc_id, original, hidden, labels, {"stage": "link", "sources": list(priority)})
+        row = document_row(doc_id, original, hidden, {"stage": "link", "sources": list(priority)}, labels)
         row["pseudonymized"] = pipeline.link(original, labels)
         rows.append(row)
     write_jsonl(dst, rows)
