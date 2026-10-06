@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 
 from .persons import stem
-from .pipeline import build_annotations
+from .pipeline import build_annotations, candidates as _candidates
 
 RES = Path(__file__).resolve().parent / "resources"
 _read = lambda n: set((RES / n).read_text(encoding="utf8").split())
@@ -127,6 +127,11 @@ def person_spans(text):
                 take(i, i)
     out.sort()
     return out
+
+
+def candidates(text):
+    """Кандидати до злиття (див. pipeline.candidates): ОСОБА за словником і структурою + правила."""
+    return _candidates(text, person_spans(text), person_source="regex_persons")
 
 
 def annotate(text):

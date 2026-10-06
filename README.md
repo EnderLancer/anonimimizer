@@ -122,6 +122,29 @@ python solution/predict.py out/inputs.jsonl out/submission.jsonl
 python data/evaluate.py data/test/court_cases.jsonl out/submission.jsonl
 ```
 
+### Конвеєр оцінки (CI)
+
+`.github/workflows/evaluate.yml` запускається на кожен pull request і push у `main` і проходить ті самі кроки, що й
+`predict.py`, але з проміжними файлами:
+
+```bash
+python scripts/split_test_data.py data/test/court_cases.jsonl out/inputs.jsonl     # лише id та original
+python solution/detect.py out/inputs.jsonl out/candidates.jsonl [--mode regex]      # кандидати з джерелом
+python solution/combine.py out/candidates.jsonl out/linked.jsonl                    # злиття + коди + pseudonymized
+python scripts/to_submission.py out/linked.jsonl out/submission.jsonl               # лише id, start, end, pseudonym
+python data/evaluate.py data/test/court_cases.jsonl out/submission.jsonl
+```
+
+- `candidates.jsonl` — усі кандидати до злиття, без кодів: `{"start", "end", "type", "text", "metadata": {"source"}}`,
+  де `source` — `ner`, `regex_persons`, `rules` або `crf`.
+- `linked.jsonl` — кандидати, що пройшли злиття, з полем `pseudonym`, і очищений текст у `pseudonymized`.
+- `submission.jsonl` — рівно формат `data/evaluate.py`; збігається байт у байт з виходом `predict.py`
+  (CI перевіряє це в режимі regex).
+
+Результат у відсотках пишеться в summary запуску, проміжні файли зберігаються як artifact. Ручний запуск (Actions →
+Evaluation → Run workflow): `use_model` вимкнено — режим 1 (only regex, ~1 хв); `min_score` — впасти, якщо бал нижчий
+за поріг (те саме для всіх запусків — змінна репозиторію `MIN_SCORE`).
+
 ### Де береться модель
 
 `solution/pseudonymizer/ner.py` шукає теку моделі в такому порядку: змінна `ANON_SPACY_MODEL` → `solution/models/spacy/` →
@@ -144,6 +167,7 @@ python solution/training/build_name_vocab.py               # словники д
 ```
 solution/
   predict.py                 точка входу (CLI)
+  detect.py, combine.py      ті самі кроки окремо, з проміжними файлами (для CI)
   download_models.py         завантаження нейромережі
   requirements.txt
   models/crf2.model          CRF-модель (spacy-модель завантажується окремо в models/spacy/)
@@ -158,6 +182,8 @@ solution/
   training/                  скрипти навчання та побудови словників
   baselines/team_regex_baseline.py   початковий базовий regex команди (для порівняння)
 results/results.json         метрики фінальних запусків
+scripts/                     підготовка тестових даних, to_submission.py, звіт для CI
+.github/workflows/evaluate.yml   конвеєр оцінки
 ```
 
 ## Чесні застереження
