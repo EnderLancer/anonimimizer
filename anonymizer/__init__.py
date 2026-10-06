@@ -1,4 +1,3 @@
-from .document import Hidden, MaskedDocument
-from .pipeline import Pipeline, Result
+from .annotations import Hidden, read_jsonl, write_jsonl
 
-__all__ = ["Hidden", "MaskedDocument", "Pipeline", "Result"]
+__all__ = ["Hidden", "read_jsonl", "write_jsonl"]

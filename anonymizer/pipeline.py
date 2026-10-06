@@ -1,47 +1,41 @@
-"""Flow: document -> RegEx -> RegExed document -> Model -> Cleaned document -> Link results -> Cleaned document.
+"""Hidden values at positions -> Mapping values -> Link results -> Cleaned document.
 
-RegEx і Model збирають приховані значення з позиціями в оригіналі, Mapping values дає їм
-псевдоніми, Link results підставляє псевдоніми в оригінал.
+RegEx і Model незалежно знаходять приховані значення в оригіналі. Тут їх об'єднуємо,
+даємо псевдоніми і підставляємо в оригінал.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from .annotations import Hidden
 
-from . import mapping, regex_stage
-from .document import Hidden, MaskedDocument
-
-
-@dataclass
-class Result:
-    cleaned: str               # оригінал з псевдонімами замість персональних даних
-    annotations: list[dict]    # [{"start", "end", "pseudonym"}] у координатах оригіналу
-    hidden: list[Hidden]
+# за перетину фрагментів лишаємо той, чиє джерело стоїть раніше
+DEFAULT_PRIORITY = ("regex", "model")
 
 
-def link(original: str, labels: dict[Hidden, str]) -> Result:
-    hidden = sorted(labels, key=lambda h: h.start)
+def merge(*sources: list[Hidden], priority: tuple[str, ...] = DEFAULT_PRIORITY) -> list[Hidden]:
+    """Об'єднує анотації етапів. Якщо фрагменти перетинаються, лишаємо фрагмент пріоритетнішого джерела,
+    а в його metadata.agreed_with дописуємо джерела, які знайшли те саме місце того самого типу."""
+    rank = {s: i for i, s in enumerate(priority)}
+    candidates = sorted((h for src in sources for h in src),
+                        key=lambda h: (rank.get(h.source, len(rank)), h.start, -(h.end - h.start)))
+    kept: list[Hidden] = []
+    for h in candidates:
+        clash = [k for k in kept if k.overlaps(h)]
+        if not clash:
+            kept.append(Hidden(h.start, h.end, h.type, h.text, dict(h.metadata)))
+            continue
+        for k in clash:
+            if k.type == h.type and h.source != k.source:
+                agreed = k.metadata.setdefault("agreed_with", [])
+                if h.source not in agreed:
+                    agreed.append(h.source)
+    return sorted(kept, key=lambda h: h.start)
+
+
+def link(original: str, labels: dict[Hidden, str]) -> str:
+    """Cleaned document: оригінал з псевдонімами замість прихованих значень."""
     parts, pos = [], 0
-    for h in hidden:
+    for h in sorted(labels, key=lambda h: h.start):
         parts += [original[pos:h.start], labels[h]]
         pos = h.end
     parts.append(original[pos:])
-    anns = [{"start": h.start, "end": h.end, "pseudonym": labels[h]} for h in hidden]
-    return Result("".join(parts), anns, hidden)
-
-
-class Pipeline:
-    def __init__(self, model=None):
-        """model — об'єкт з методом find_batch(list[MaskedDocument]) -> list[list[Hidden]] або None (лише RegEx)."""
-        self.model = model
-
-    def run_batch(self, documents: list[str]) -> list[Result]:
-        regexed = [MaskedDocument(doc, regex_stage.find(doc)) for doc in documents]
-        model_found = self.model.find_batch(regexed) if self.model else [[] for _ in regexed]
-        results = []
-        for doc, found in zip(regexed, model_found):
-            hidden = doc.hidden + [h for h in found if not any(h.start < r.end and r.start < h.end for r in doc.hidden)]
-            results.append(link(doc.original, mapping.assign(hidden)))
-        return results
-
-    def run(self, document: str) -> Result:
-        return self.run_batch([document])[0]
+    return "".join(parts)

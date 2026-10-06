@@ -3,9 +3,10 @@
 #                                                ▲
 #   Expected result ─────────────────────────────┘
 #
-# Regex+model flow (anonymizer/pipeline.py):
-#   document ─► RegEx ─► RegExed document ─► Model ─► Cleaned document ─► Link results ─► Cleaned document
-#                 └──────────► Hidden values at positions ◄──┘ ─► Mapping values ─┘
+# Regex+model flow — RegEx і Model працюють паралельно над оригіналом, кожен пише свої анотації:
+#   document ─┬─► RegEx (job: regex) ─┐
+#             └─► Model (job: model) ─┴─► Hidden values at positions ─► Mapping values ─► Link results ─► Cleaned document
+#                                                                         (job: evaluate, solution/link.py)
 name: Evaluation
 
 on:
@@ -32,15 +33,37 @@ permissions:
 
 env:
   TEST_DATA: data/test/court_cases.jsonl   # contains both the inputs and the expected annotations
-  NER_MODEL: ${{ (github.event_name != 'workflow_dispatch' || inputs.use_model) && (inputs.ner_model || 'ukr-models/uk-ner') || '' }}
+  NER_MODEL: ${{ inputs.ner_model || 'ukr-models/uk-ner' }}
 
 jobs:
-  evaluate:
+  regex:
+    name: RegEx
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Prepare test data (hide expected result from the flow)
+        run: python scripts/split_test_data.py "$TEST_DATA" inputs.jsonl
+
+      - name: Run RegEx
+        run: python solution/regex_annotate.py inputs.jsonl regex.jsonl
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: annotations-regex
+          path: regex.jsonl
+
+  model:
+    name: Model
+    if: github.event_name != 'workflow_dispatch' || inputs.use_model
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
-
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
@@ -48,41 +71,67 @@ jobs:
           cache-dependency-path: solution/requirements.txt
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r solution/requirements.txt
+        run: pip install -r solution/requirements.txt
 
       - name: Cache NER model
-        if: env.NER_MODEL != ''
         uses: actions/cache@v5
         with:
           path: ~/.cache/huggingface
           key: hf-${{ env.NER_MODEL }}
 
       - name: Prepare test data (hide expected result from the flow)
-        run: |
-          mkdir -p out
-          python scripts/split_test_data.py "$TEST_DATA" out/inputs.jsonl
+        run: python scripts/split_test_data.py "$TEST_DATA" inputs.jsonl
 
-      - name: Run Regex+model flow
+      - name: Run Model
+        run: python solution/model_annotate.py inputs.jsonl model.jsonl --model "$NER_MODEL"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: annotations-model
+          path: model.jsonl
+
+  evaluate:
+    name: Link results and evaluate
+    needs: [regex, model]
+    # model може бути пропущено (use_model = false), тоді оцінюємо лише RegEx
+    if: always() && needs.regex.result == 'success' && contains(fromJSON('["success", "skipped"]'), needs.model.result)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: annotations-*
+          path: out
+          merge-multiple: true
+
+      - name: Link results
         run: |
-          if [ -n "$NER_MODEL" ]; then
-            python solution/predict.py out/inputs.jsonl out/submission.jsonl --model "$NER_MODEL"
-          else
-            python solution/predict.py out/inputs.jsonl out/submission.jsonl --no-model
-          fi
+          sources=(out/regex.jsonl)
+          if [ -f out/model.jsonl ]; then sources+=(out/model.jsonl); fi
+          python solution/link.py out/submission.jsonl "${sources[@]}"
 
       - name: Check against expected result
-        run: python data/evaluate.py "$TEST_DATA" out/submission.jsonl --json > out/result.json
+        run: |
+          for stage in regex model submission; do
+            if [ -f "out/$stage.jsonl" ]; then
+              python data/evaluate.py "$TEST_DATA" "out/$stage.jsonl" --json > "out/result-$stage.json"
+            fi
+          done
 
       - name: Result %
         env:
           MIN_SCORE: ${{ inputs.min_score || vars.MIN_SCORE }}
         run: |
-          args=()
+          args=(--compare RegEx=out/result-regex.json)
+          if [ -f out/result-model.json ]; then args+=(--compare Model=out/result-model.json); fi
           if [ -n "$MIN_SCORE" ]; then args+=(--min-score "$MIN_SCORE"); fi
           set -o pipefail
-          python scripts/report.py out/result.json "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+          python scripts/report.py out/result-submission.json "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v6
         if: always()
@@ -90,5 +139,5 @@ jobs:
           name: evaluation-results
           path: |
             out/submission.jsonl
-            out/result.json
+            out/result-*.json
           if-no-files-found: ignore

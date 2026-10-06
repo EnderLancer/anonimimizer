@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 
-from .document import Hidden
+from .annotations import Hidden
 
 UP = "А-ЯІЇЄҐ"
 LO = "а-яіїєґ'’ʼ"
@@ -12,27 +12,28 @@ SURNAME = rf"{NAME}(?:-{NAME})?"
 PATRONYMIC = rf"[{UP}][{LO}]*(?:ович|евич|євич|івн|ївн|інічн|ичн)[{LO}]*"
 INITIALS = rf"[{UP}]\.\s?[{UP}]\.?"
 
-PERSON = [
-    re.compile(rf"\b{SURNAME}\s+{NAME}\s+{PATRONYMIC}\b"),   # Прізвище Ім'я По батькові
-    re.compile(rf"\b{NAME}\s+{PATRONYMIC}\s+{SURNAME}\b"),   # Ім'я По батькові Прізвище
-    re.compile(rf"\b{SURNAME}\s+{INITIALS}"),                # Прізвище І.Б.
-    re.compile(rf"\b{INITIALS}\s?{SURNAME}\b"),              # І.Б. Прізвище
-]
+# назва правила потрапляє в metadata.rule кожної анотації
+PERSON = {
+    "person_full_name": re.compile(rf"\b{SURNAME}\s+{NAME}\s+{PATRONYMIC}\b"),            # Прізвище Ім'я По батькові
+    "person_full_name_reversed": re.compile(rf"\b{NAME}\s+{PATRONYMIC}\s+{SURNAME}\b"),   # Ім'я По батькові Прізвище
+    "person_surname_initials": re.compile(rf"\b{SURNAME}\s+{INITIALS}"),                  # Прізвище І.Б.
+    "person_initials_surname": re.compile(rf"\b{INITIALS}\s?{SURNAME}\b"),                # І.Б. Прізвище
+}
 
-NUMBER = [
-    re.compile(r"\bUA\d{27}\b"),                                                    # IBAN
-    re.compile(rf"\b[{UP}A-Z]{{2}}\s?\d{{4}}\s?[{UP}A-Z]{{2}}\b"),                  # номерний знак
-    re.compile(rf"\b[{UP}]{{2}}\s?№?\s?\d{{6}}\b"),                                 # паспорт
-    re.compile(r"\b[АA]\d{4,5}\b"),                                                 # військова частина
-    re.compile(r"(?<![\d/.-])(?:\+?38\s?)?\(?0\d{2}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}(?![\d/-])"),  # телефон
-    re.compile(r"(?<![\d/.-])\d{9,10}(?![\d/.-])"),                                 # РНОКПП, ID-картка
-]
+NUMBER = {
+    "iban": re.compile(r"\bUA\d{27}\b"),
+    "license_plate": re.compile(rf"\b[{UP}A-Z]{{2}}\s?\d{{4}}\s?[{UP}A-Z]{{2}}\b"),
+    "passport": re.compile(rf"\b[{UP}]{{2}}\s?№?\s?\d{{6}}\b"),
+    "military_unit": re.compile(r"\b[АA]\d{4,5}\b"),
+    "phone": re.compile(r"(?<![\d/.-])(?:\+?38\s?)?\(?0\d{2}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}(?![\d/-])"),
+    "tax_or_id_number": re.compile(r"(?<![\d/.-])\d{9,10}(?![\d/.-])"),                   # РНОКПП, ID-картка
+}
 
 MONTHS = "січня|лютого|березня|квітня|травня|червня|липня|серпня|вересня|жовтня|листопада|грудня"
-INFO = [
-    re.compile(r"\b(?:19|20)\d\d-[01]\d-[0-3]\d\b"),                                # 2011-04-23
-    re.compile(rf"\b\d{{1,2}}(?:\.\d{{2}}\.|\s+(?:{MONTHS})\s+)\d{{4}}(?:\s+року)?(?=\s+(?:року\s+)?народження)"),
-]
+INFO = {
+    "iso_date": re.compile(r"\b(?:19|20)\d\d-[01]\d-[0-3]\d\b"),                          # 2011-04-23
+    "birth_date": re.compile(rf"\b\d{{1,2}}(?:\.\d{{2}}\.|\s+(?:{MONTHS})\s+)\d{{4}}(?:\s+року)?(?=\s+(?:року\s+)?народження)"),
+}
 
 # Адреса: ланцюжок частин через кому, у якому є вулиця
 STREET = re.compile(rf"(?:\b(?:по|на)\s+)?\b(?:вул\.|вулиц[яіюе]|просп\.|проспект[ауі]?|пров\.|провулк?[ауі]?|бульв\.|"
@@ -97,14 +98,14 @@ def _addresses(text: str) -> list[tuple[int, int]]:
 def find(text: str) -> list[Hidden]:
     found: list[Hidden] = []
 
-    def add(s: int, e: int, kind: str) -> None:
+    def add(s: int, e: int, kind: str, rule: str) -> None:
         if not any(s < h.end and h.start < e for h in found):
-            found.append(Hidden(s, e, kind, text[s:e], "regex"))
+            found.append(Hidden(s, e, kind, text[s:e], {"source": "regex", "rule": rule}))
 
     for s, e in _addresses(text):
-        add(s, e, "АДРЕСА")
-    for kind, patterns in (("ОСОБА", PERSON), ("НОМЕР", NUMBER), ("ІНФОРМАЦІЯ", INFO)):
-        for p in patterns:
+        add(s, e, "АДРЕСА", "address_chain")
+    for kind, rules in (("ОСОБА", PERSON), ("НОМЕР", NUMBER), ("ІНФОРМАЦІЯ", INFO)):
+        for rule, p in rules.items():
             for m in p.finditer(text):
-                add(m.start(), m.end(), kind)
+                add(m.start(), m.end(), kind, rule)
     return sorted(found, key=lambda h: h.start)

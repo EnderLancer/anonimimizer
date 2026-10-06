@@ -1,9 +1,9 @@
-"""Етап Model: NER-модель з Hugging Face шукає персональні дані в RegExed document."""
+"""Етап Model: NER-модель з Hugging Face шукає персональні дані в оригінальному документі."""
 from __future__ import annotations
 
 import os
 
-from .document import Hidden, MaskedDocument
+from .annotations import Hidden
 
 # мітка моделі -> тип псевдоніма (None — не приховуємо).
 # ORG вимкнено: загальна NER-модель позначає здебільшого суди й держоргани, а це не персональні дані
@@ -15,6 +15,7 @@ class NerModel:
                  min_score: float = 0.8, batch_size: int = 8):
         from transformers import AutoTokenizer, pipeline
 
+        self.name = name
         self.labels = labels or DEFAULT_LABELS
         self.min_score = min_score
         self.batch_size = batch_size
@@ -23,28 +24,35 @@ class NerModel:
         self.ner = pipeline("token-classification", model=name, tokenizer=tokenizer, aggregation_strategy="first",
                             stride=128, device=int(os.environ.get("NER_DEVICE", "-1")))
 
+    @property
+    def metadata(self) -> dict:
+        return {"stage": "model", "model": self.name, "min_score": self.min_score,
+                "labels": {k: v for k, v in self.labels.items() if v}}
+
     def _keep(self, ent: dict, text: str) -> str | None:
         kind = self.labels.get(ent["entity_group"])
         if kind is None or ent["score"] < self.min_score:
             return None
-        value = text[ent["start"]:ent["end"]]
-        if kind == "ОСОБА" and len(value.split()) < 2:
+        if kind == "ОСОБА" and len(text[ent["start"]:ent["end"]].split()) < 2:
             return None  # одне слово — найчастіше не особа, а частина назви
         return kind
 
-    def find_batch(self, docs: list[MaskedDocument]) -> list[list[Hidden]]:
-        outputs = self.ner([d.text for d in docs], batch_size=self.batch_size)
+    def find_batch(self, texts: list[str]) -> list[list[Hidden]]:
+        outputs = self.ner(texts, batch_size=self.batch_size)
         found = []
-        for doc, ents in zip(docs, outputs):
+        for text, ents in zip(texts, outputs):
             hidden = []
             for ent in ents:
-                kind = self._keep(ent, doc.text)
-                pos = doc.to_original(ent["start"], ent["end"]) if kind else None
-                if pos:
-                    s, e = pos
-                    while e > s and doc.original[e - 1] in " .,;:":
-                        e -= 1
-                    if e > s:
-                        hidden.append(Hidden(s, e, kind, doc.original[s:e], "model"))
+                kind = self._keep(ent, text)
+                if not kind:
+                    continue
+                s, e = ent["start"], ent["end"]
+                while s < e and text[s].isspace():
+                    s += 1
+                while e > s and text[e - 1] in " \n.,;:":
+                    e -= 1
+                if e > s:
+                    meta = {"source": "model", "label": ent["entity_group"], "score": round(float(ent["score"]), 4)}
+                    hidden.append(Hidden(s, e, kind, text[s:e], meta))
             found.append(hidden)
         return found

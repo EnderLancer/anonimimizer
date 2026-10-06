@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 
-from .document import Hidden
+from .annotations import Hidden
 
 WORD = re.compile(r"[^\W\d_][\w'’ʼ-]*")
 PATRONYMIC = re.compile(r"(?:ович|евич|євич|івн|ївн|інічн|ичн)", re.I)
@@ -32,8 +32,8 @@ def person_key(value: str) -> tuple:
 
 def value_key(h: Hidden) -> tuple:
     if h.type == "ОСОБА":
-        return (h.type, *person_key(h.value))
-    return (h.type, re.sub(r"\W+", " ", h.value.lower()).strip())
+        return (h.type, *person_key(h.text))
+    return (h.type, re.sub(r"\W+", " ", h.text.lower()).strip())
 
 
 def assign(hidden: list[Hidden]) -> dict[Hidden, str]:
