@@ -7,3 +7,6 @@ venv/
 
 # OS / editor
 .DS_Store
+
+# Pipeline outputs
+out/

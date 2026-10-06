@@ -1,0 +1,107 @@
+# Evaluation pipeline:
+#   Test data ──► run Regex+model flow ──► check against expected result ──► result %
+#                                                ▲
+#   Expected result ─────────────────────────────┘
+#
+# Regex+model flow — RegEx і Model незалежно читають оригінал і пишуть анотації з type, text, metadata:
+#   document ─┬─► RegEx ─┐
+#             └─► Model ─┴─► Hidden values at positions ─► Mapping values ─► Link results ─► Cleaned document
+#                            (solution/link.py: об'єднання і номери псевдонімів)
+# Перед оцінкою scripts/to_submission.py лишає тільки id, start, end, pseudonym.
+name: Evaluation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      min_score:
+        description: "Fail the run if the score (%) is below this value"
+        required: false
+        default: ""
+      use_model:
+        description: "Run the Model step (off = RegEx only)"
+        type: boolean
+        default: true
+      ner_model:
+        description: "Hugging Face NER model for the Model step"
+        required: false
+        default: "ukr-models/uk-ner"
+
+permissions:
+  contents: read
+
+env:
+  TEST_DATA: data/test/court_cases.jsonl   # contains both the inputs and the expected annotations
+  USE_MODEL: ${{ github.event_name != 'workflow_dispatch' || inputs.use_model }}
+  NER_MODEL: ${{ inputs.ner_model || 'ukr-models/uk-ner' }}
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: solution/requirements.txt
+
+      - name: Install dependencies
+        if: env.USE_MODEL == 'true'
+        run: pip install -r solution/requirements.txt
+
+      - name: Cache NER model
+        if: env.USE_MODEL == 'true'
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ env.NER_MODEL }}
+
+      - name: Prepare test data (hide expected result from the flow)
+        run: |
+          mkdir -p out
+          python scripts/split_test_data.py "$TEST_DATA" out/inputs.jsonl
+
+      - name: RegEx
+        run: python solution/regex_annotate.py out/inputs.jsonl out/regex.jsonl
+
+      - name: Model
+        if: env.USE_MODEL == 'true'
+        run: python solution/model_annotate.py out/inputs.jsonl out/model.jsonl --model "$NER_MODEL"
+
+      - name: Link results (merge and number pseudonyms)
+        run: |
+          sources=(out/regex.jsonl)
+          if [ -f out/model.jsonl ]; then sources+=(out/model.jsonl); fi
+          python solution/link.py out/linked.jsonl "${sources[@]}"
+
+      - name: Strip extra fields for evaluation
+        run: python scripts/to_submission.py out/linked.jsonl out/submission.jsonl
+
+      - name: Check against expected result
+        run: python data/evaluate.py "$TEST_DATA" out/submission.jsonl --json > out/result.json
+
+      - name: Result %
+        env:
+          MIN_SCORE: ${{ inputs.min_score || vars.MIN_SCORE }}
+        run: |
+          args=()
+          if [ -n "$MIN_SCORE" ]; then args+=(--min-score "$MIN_SCORE"); fi
+          set -o pipefail
+          python scripts/report.py out/result.json "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: evaluation-results
+          path: |
+            out/regex.jsonl
+            out/model.jsonl
+            out/linked.jsonl
+            out/submission.jsonl
+            out/result.json
+          if-no-files-found: ignore
