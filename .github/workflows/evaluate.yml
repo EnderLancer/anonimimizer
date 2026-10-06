@@ -33,7 +33,7 @@ env:
 jobs:
   evaluate:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120   # mode 2 on a GitHub runner: ~58 min for 240 documents
     steps:
       - uses: actions/checkout@v5
 
