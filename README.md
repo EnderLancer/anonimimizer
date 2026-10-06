@@ -141,6 +141,8 @@ python data/evaluate.py data/test/court_cases.jsonl out/submission.jsonl
 - `submission.jsonl` — рівно формат `data/evaluate.py`; збігається байт у байт з виходом `predict.py`
   (CI перевіряє це в режимі regex).
 
+У режимі 2 крок detect ділиться на 8 паралельних job-ів (на одному GitHub runner-і 240 рішень ідуть ~58 хв), а job
+evaluate склеює їхні кандидати й далі працює як вище. Новий push у той самий PR скасовує попередній запуск.
 Результат у відсотках пишеться в summary запуску, проміжні файли зберігаються як artifact. Ручний запуск (Actions →
 Evaluation → Run workflow): `use_model` вимкнено — режим 1 (only regex, ~1 хв); `min_score` — впасти, якщо бал нижчий
 за поріг (те саме для всіх запусків — змінна репозиторію `MIN_SCORE`).

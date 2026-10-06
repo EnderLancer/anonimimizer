@@ -6,6 +6,9 @@
 #   detect   solution/detect.py         кандидати з type, text, metadata.source (ner | regex_persons | rules | crf)
 #   combine  solution/combine.py        злиття кандидатів і псевдоніми з номерами (ОСОБА_1 …) + pseudonymized
 #   strip    scripts/to_submission.py   лише id, start, end, pseudonym — формат data/evaluate.py
+#
+# Режим 2 (model + regex) на одному runner-і йде ~58 хв, тому detect ділиться на SHARDS паралельних job-ів
+# (кожен бере кожне SHARDS-те рішення), а evaluate склеює їхні кандидати. Режим 1 (only regex) — одразу в evaluate.
 name: Evaluation
 
 on:
@@ -26,14 +29,26 @@ on:
 permissions:
   contents: read
 
+# новий push скасовує застарілий запуск того самого PR / гілки
+concurrency:
+  group: evaluation-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   TEST_DATA: data/test/court_cases.jsonl   # contains both the inputs and the expected annotations
   MODE: ${{ (github.event_name != 'workflow_dispatch' || inputs.use_model) && 'full' || 'regex' }}
+  SHARDS: 8                                # має збігатися з matrix.shard нижче
 
 jobs:
-  evaluate:
+  detect:
+    name: Detect (mode 2, shard ${{ matrix.shard }})
+    if: github.event_name != 'workflow_dispatch' || inputs.use_model
     runs-on: ubuntu-latest
-    timeout-minutes: 120   # mode 2 on a GitHub runner: ~58 min for 240 documents
+    timeout-minutes: 30
+    strategy:
+      fail-fast: true
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
       - uses: actions/checkout@v5
 
@@ -44,19 +59,45 @@ jobs:
           cache-dependency-path: solution/requirements.txt
 
       - name: Install dependencies
-        if: env.MODE == 'full'
         run: pip install -r solution/requirements.txt
 
       - name: Cache spaCy model
-        if: env.MODE == 'full'
         uses: actions/cache@v5
         with:
           path: solution/models/spacy
           key: spacy-uk_ner_web_trf_13class
 
       - name: Download spaCy model
-        if: env.MODE == 'full'
         run: python solution/download_models.py
+
+      - name: Prepare test data shard (hide expected result from the flow)
+        run: |
+          mkdir -p out
+          python scripts/split_test_data.py "$TEST_DATA" out/inputs.jsonl
+          awk -v i=${{ matrix.shard }} -v n="$SHARDS" '(NR - 1) % n == i' out/inputs.jsonl > out/inputs-shard.jsonl
+          wc -l out/inputs-shard.jsonl
+
+      - name: Detect
+        run: python solution/detect.py out/inputs-shard.jsonl out/candidates-${{ matrix.shard }}.jsonl --mode full
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: candidates-shard-${{ matrix.shard }}
+          path: out/candidates-${{ matrix.shard }}.jsonl
+          retention-days: 3
+
+  evaluate:
+    needs: detect
+    # detect пропущено в режимі 1; в режимі 2 мають успішно завершитися всі шарди
+    if: always() && contains(fromJSON('["success", "skipped"]'), needs.detect.result)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
 
       - name: Prepare test data (hide expected result from the flow)
         run: |
@@ -71,8 +112,22 @@ jobs:
           python scripts/to_submission.py out/linked-regex.jsonl out/submission-regex.jsonl
           cmp out/predict-regex.jsonl out/submission-regex.jsonl
 
+      - uses: actions/download-artifact@v7
+        if: env.MODE == 'full'
+        with:
+          pattern: candidates-shard-*
+          path: out/shards
+          merge-multiple: true
+
       - name: Detect
-        run: python solution/detect.py out/inputs.jsonl out/candidates.jsonl --mode "$MODE"
+        run: |
+          if [ "$MODE" = full ]; then
+            cat out/shards/candidates-*.jsonl > out/candidates.jsonl
+          else
+            python solution/detect.py out/inputs.jsonl out/candidates.jsonl --mode regex
+          fi
+          echo "$(wc -l < out/candidates.jsonl) of $(wc -l < out/inputs.jsonl) documents"
+          [ "$(wc -l < out/candidates.jsonl)" -eq "$(wc -l < out/inputs.jsonl)" ]
 
       - name: Combine (merge and number pseudonyms)
         run: python solution/combine.py out/candidates.jsonl out/linked.jsonl
