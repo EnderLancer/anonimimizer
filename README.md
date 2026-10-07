@@ -26,7 +26,7 @@ python run.py cases.jsonl out.jsonl --mode model_regex   # 2. NER-модель +
 python run.py cases.jsonl out.jsonl --mode full          # 3. + CRF (найкраще)
 ```
 
-Оцінка: офіційним `evaluate.py` організаторів: `python evaluate.py court_cases.jsonl results/full.jsonl`.
+Оцінка: офіційним `evaluate.py` організаторів: `python data/evaluate.py data/test/court_cases.jsonl results/full.jsonl`. CI (`.github/workflows/evaluate.yml`) на кожен PR і push у main проганяє всі три режими на тесті й пише результат у summary.
 
 Для режимів 2 і 3 потрібна модель `uk_ner_web_trf_13class` (spaCy): покладіть її в `models/uk_ner_web_trf_13class` або задайте шлях змінною `UK_NER_MODEL`. Вихід моделі для тесту вже збережено в `ner_cache.json`, тому на тесті інференс не запускається. Для режиму 3 потрібен пакет `python-crfsuite`.
 
