@@ -15,3 +15,5 @@ data/resources/
 !data/silver/REPORT.md
 !data/silver/audit/metrics.json
 datagen/.venv/
+train/.venv/
+train/runs/
