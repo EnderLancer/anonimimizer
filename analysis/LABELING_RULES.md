@@ -1,52 +1,93 @@
 # Ukrainian court-decision depersonalization: rules for ОСОБА / АДРЕСА / НОМЕР / ІНФОРМАЦІЯ
 
-The labels in this challenge are the ones used by the **Єдиний державний реєстр судових рішень (ЄДРСР)**. Below are (1) the legal sources that define them, (2) the official rule for each label, and (3) what the 240 gold documents actually do, with counts, including every exception found.
+The labels in this challenge are the ones used by the **Єдиний державний реєстр судових рішень (ЄДРСР)**. Below are (1) the legal sources that define them, quoted from the primary texts, (2) the official rule for each label, and (3) what the 240 gold documents actually do, with counts, including every exception found.
 
-**How well each statement is verified.** The cloud environment's network policy blocks zakon.rada.gov.ua, court.gov.ua, protocol.ua, kodeksy.com.ua and ligazakon, so primary texts could not be opened directly. Legal statements come from search-engine excerpts of those pages and are marked:
-- ✅ quoted in an excerpt of the primary text;
-- 🟡 reported by a secondary source (news, commentary), or the excerpts disagree;
-- ❓ not verified.
-
-Statements about the gold data (📊) are measured on `data/test/court_cases.jsonl` and are exact.
+**How well each statement is verified.**
+- ✅ quoted from the primary text (downloaded 08.10.2026; verbatim copies in [`legal/`](legal/));
+- 🟡 secondary source only (news, commentary);
+- 📊 measured on `data/test/court_cases.jsonl` (exact).
 
 ---
 
-## 1. Legal sources
+## 1. Legal sources (all ✅ unless marked)
 
-| # | Act | What it says about masking | Status |
+| # | Act | Status on 08.10.2026 | What it contributes |
 |---|---|---|---|
-| 1 | **Закон України «Про доступ до судових рішень» № 3262-IV (22.12.2005), ст. 7** «Відомості, що не можуть бути розголошені в текстах судових рішень, відкритих для загального доступу» | The list of what must be hidden. Hidden data **«замінюються літерними або цифровими позначеннями»** | ✅ |
-| 1a | ст. 7 ч. 1 (current wording) | must not be disclosed: (1) **place of residence or stay of natural persons with the address, phone numbers or other means of communication, e-mail, РНОКПП (taxpayer number), details of identity documents, unique record numbers in the Єдиний державний демографічний реєстр**; (2) **vehicle registration numbers**; (3) **bank account and payment card numbers**; (4) **information protected by a closed (закрите) court hearing** | ✅ (items 1–3 quoted; item 4 in two excerpts) |
-| 1b | ст. 7 (older/other wording, cited by commentaries) | «відомості, що дають можливість ідентифікувати фізичну особу»: **names (ім'я, по батькові, прізвище) of natural persons**, address/contacts/IDs, vehicle numbers, **«інші відомості, що дають можливість ідентифікувати фізичну особу»** | 🟡 Excerpts disagree on whether names are still in the current list. A 2017 amendment reworded the article (DEJURE: «з грудня 2017 року в ст. 7 відсутній п. 4»). Check the current edition on zakon.rada.gov.ua |
-| 1c | ст. 7, exceptions (not treated as protected) | **surnames and initials of the judges who made the decision**; **names of officials and civil servants acting in their official capacity**; **names of the parties to a case decided by an international court (e.g. ЄСПЛ) that the Ukrainian decision cites** (added by Закон № 4779-VI of 17.05.2012) | ✅ judges and international-court parties; 🟡 officials (cited by Пленум ВАСУ, постанова 29.09.2016 № 10) |
-| 1d | ст. 7 ч. 2 | in criminal cases, for safety reasons, the names of judges and other participants **may be omitted** | 🟡 |
-| 2 | **Порядок ведення ЄДРСР**, рішення ВРП від 19.04.2018 № 1200/0/15-18 (amended, e.g. № 2364/0/15-21). It replaced постанова КМУ № 740 of 25.05.2006, which lost force on 01.10.2018 | **знеособлення** = masking non-disclosable data in the electronic copy «за допомогою спеціалізованого програмного забезпечення з подальшою вибірковою візуальною перевіркою». Documents are masked automatically within 3 working days and published by the next working day | ✅ |
-| 3 | **Кодифікатор відомостей, що не можуть бути розголошені в текстах судових рішень** (наказ ДСА від 13.06.2006 № 59; copies on ki.court.gov.ua/tu11/14/36, lg.court.gov.ua/tu13/inshe/10/1) | defines the **four label words and their numbering**, plus an annex listing the participants it applies to | ✅ for the rules quoted in §2; the annex was not readable |
-| 4 | **Інструкція … копій судових рішень, що підлягають внесенню до ЄДРСР** (наказ ДСА від 14.05.2008 № 37), п. 1.10 | the substitution is done by the registry's technical administrator (now ДП «Інформаційні судові системи») | ✅ |
-| 5 | Practice: **ДП «ІСС»** | Since the end of 2017 masking has been done by ІСС's own **AI module**, with 30–60 thousand documents a day and **selective** human checking. The previous (Russian-developed) module was estimated at 20–30% effectiveness. Press reports describe the module masking even the names of Grand Chamber judges in dissenting opinions | 🟡 |
-| 6 | Draft law **№ 7033-д** (passed at first reading 23.05.2024) | would let judges remove more information and **automatically remove names and addresses of public institutions**. Status after first reading unknown | 🟡 not law |
+| 1 | **Закон «Про доступ до судових рішень» № 3262-IV, ст. 7.** Wording of Закон № 2147-VIII (03.10.2017, in force 15.12.2017); ч. 3 added by Закон № 361-IX (06.12.2019). Text: [`legal/ARTICLE_7_CURRENT.txt`](legal/ARTICLE_7_CURRENT.txt) | in force | what must be hidden (see below) |
+| 2 | **Same article, 2012–2017 wording.** Text: [`legal/ARTICLE_7_2012_2017.txt`](legal/ARTICLE_7_2012_2017.txt) | replaced 15.12.2017 | the origin of the name masking and of the judge / official / international-court exceptions |
+| 3 | **Кодифікатор відомостей, що не можуть бути розголошені в текстах судових рішень** (наказ ДСА від 13.06.2006 № 59). Text: [`legal/CODIFIER_DSA_59_2006.txt`](legal/CODIFIER_DSA_59_2006.txt) | **in force** («поточна редакція» on zakon.rada.gov.ua) | **defines the four labels, the numbering, the official-person exception, and the 59 participant roles whose data is masked** |
+| 4 | **Порядок ведення ЄДРСР** (рішення ВРП від 19.04.2018 № 1200/0/15-18; last amended 03.09.2026, № 1807/0/15-26, about access, not masking). Excerpts: [`legal/PORYADOK_VRP_1200_2018_excerpts.txt`](legal/PORYADOK_VRP_1200_2018_excerpts.txt), from protocol.ua's copy of the 2018 text (the Rada site hosts only the cover decision) | in force | how masking is done in practice |
+| 5 | Інструкція … копій судових рішень (наказ ДСА 14.05.2008 № 37), п. 2.8–2.9 | **cancelled** 10.02.2009 (наказ № 17) | repeated the codifier word for word; history only |
+| 6 | 🟡 Practice: **ДП «Інформаційні судові системи» (ІСС)** | — | Since the end of 2017, masking has been done by ІСС's own **AI module** (30–60 thousand documents a day). The previous module was rated at 20–30% effectiveness. Press reports say it masks even Grand Chamber judges' names in dissenting opinions |
+| 7 | 🟡 Draft law № 7033-д (first reading 23.05.2024) | not law | would also strip names and addresses of public institutions |
 
-**Consequence for this dataset.** The `pseudonymized` field of the test set is ЄДРСР output, so the gold labels are the output of ІСС's automatic masker with spot checks. They are not hand-made by one annotator following the codifier. This explains why the gold sometimes breaks the official rules (judges masked, e-mail as ІНФОРМАЦІЯ, state bodies masked in some documents only; see §3). The `original` field looks reconstructed: the "real" entities are synthetic (ISO dates «2017-10-28», «Військова частина А1234», «UA2889999803…», «DF987654»).
+### 1.1 ст. 7, current wording (verbatim)
+
+> 1. У текстах судових рішень, що відкриті для загального доступу, не можуть бути розголошені такі відомості:
+> 1) місце проживання або перебування фізичних осіб із зазначенням адреси, номери телефонів чи інших засобів зв'язку, адреси електронної пошти, реєстраційні номери облікової картки платника податків, реквізити документів, що посвідчують особу, унікальні номери запису в Єдиному державному демографічному реєстрі;
+> 2) реєстраційні номери транспортних засобів;
+> 3) номери банківських рахунків, номери платіжних карток;
+> 4) інформація, для забезпечення захисту якої розгляд справи або вчинення окремих процесуальних дій відбувалися у закритому судовому засіданні;
+> 5) інші відомості, що дають можливість ідентифікувати фізичну особу.
+> Такі відомості замінюються літерними або цифровими позначеннями.
+> 2. З мотивів безпеки у текстах судових рішень у кримінальних справах … можуть не зазначатися відомості щодо імен (ім'я, по батькові, прізвище) суддів, які розглядали судову справу, та учасників судового процесу.
+> 3. … у текстах ухвал про тимчасовий доступ до речей та документів у кримінальних справах … не зазначаються відомості, що дають можливість ідентифікувати осіб, які зазначені в таких ухвалах як володільці речей або документів.
+
+What the 2017 rewrite changed compared with the 2012–2017 wording:
+- **Names are no longer listed explicitly.** Before, item 1 was «імена (ім'я, по батькові, прізвище) фізичних осіб». Now names are covered only by the catch-all «5) інші відомості, що дають можливість ідентифікувати фізичну особу».
+- **Bank accounts and payment cards were added** (item 3). So was the closed-hearing item, which was a separate part before.
+- **All three exceptions were removed from the law:**
+  - «прізвища та ініціали суддів, які ухвалили судове рішення»;
+  - «імена посадових чи службових осіб, які, виконуючи свої повноваження, беруть участь у … справах»;
+  - «імена сторін у справі, що розглядалася міжнародною судовою чи іншою міжнародною установою, на рішення якої міститься посилання» (the ЄСПЛ exception, added 2012).
+
+  Only the officials exception survives, and only in the codifier (below).
+
+### 1.2 The codifier (in force; verbatim, abridged)
+
+> Відомості, що дають можливість ідентифікувати фізичну особу … замінюються літерним або цифровим позначенням …
+> 1. Перелік фізичних осіб, відомості щодо яких не можуть бути розголошені … визначено в додатку 1.
+> 2. **Імена (прізвище, ім'я, по батькові) фізичних осіб, за винятком імен посадових чи службових осіб, які, виконуючи свої повноваження, беруть участь у цивільній, господарській, адміністративній чи кримінальній справах, справах про адміністративні правопорушення (проступки)**, замінюються літерним позначенням "ОСОБА" та цифровим позначенням, що відповідає черговості появи цієї відомості у тексті судового рішення. Наприклад: "Іванов Іван Іванович" замінюється на: "ОСОБА_1".
+> 3. **Адреса місця проживання або перебування фізичних осіб** замінюється … "АДРЕСА" … Наприклад: "Вул. Київська, кв. 1, буд. 1, м. Київ, 01001" замінюється на: "АДРЕСА_1".
+> 4. **Номер телефону чи іншого засобу зв'язку, адреса електронної пошти, реєстраційний номер транспортного засобу, ідентифікаційний номер або номер документа, що дає можливість ідентифікувати фізичну особу**, замінюються … "НОМЕР" … Наприклад: Телефонний номер "222-22-22" замінюється на: телефонний номер "НОМЕР_1".
+> 5. **Інша інформація, що дає можливість ідентифікувати фізичну особу**, замінюється … "ІНФОРМАЦІЯ" … Наприклад: Автор твору "ТВІР" замінюється на: автор твору "ІНФОРМАЦІЯ_1".
+
+**Annex 1: whose data is masked (59 roles).**
+- **Criminal:** підозрюваний, обвинувачений, підсудний, засуджений, виправданий, and their законні представники; потерпілий and his представник / близький родич / законний представник; цивільний позивач / відповідач and their представники; **свідок** and the законний представник of an underage witness; поручитель, заставодавець; the person who understands a mute or deaf witness; minors under educational coercion; persons under compulsory medical measures; the person named in an окрема ухвала.
+- **Civil / administrative / commercial:** позивач, відповідач, both kinds of третя особа, заявник, інша заінтересована особа — each with представник and законний представник; **№ 46 «Особа, яка надає правову допомогу»** (i.e. **lawyers and advocates are masked**); піклувальник, опікун, батьки (усиновлювачі), усиновлювана особа; persons in psychiatric or TB compulsory-treatment cases and their representatives or defenders; **кредитор, боржник**; persons under administrative liability and their representatives.
+- **№ 59 «Інша фізична особа, відомості щодо якої містяться у тексті судового рішення»**: the catch-all, so effectively **every natural person except officials acting in office**.
+
+### 1.3 Порядок ВРП 2018: how it is done
+
+- «**знеособлення** – процедура маскування … відомостей, що не можуть бути розголошені … **за допомогою спеціалізованого програмного забезпечення з подальшою вибірковою візуальною перевіркою** результатів такого маскування».
+- Documents are masked «в автоматичному режимі» within 3 working days of registration and opened to the public by the next working day.
+- **The court itself pre-tags the data.** When registering a decision, the court enters in its case-management system:
+  - the procedural status of every participant (II.3.15);
+  - a flag to remove judges' and participants' names for safety in criminal cases (II.3.16);
+  - «наявні в тексті … місця проживання …, адреси, номери телефонів …, адреси електронної пошти, РНОКПП, реквізити документів …, унікальні номери … в ЄДДР, **а також інші відомості, що дають можливість ідентифікувати фізичну особу – учасника справи**» (II.3.17).
+
+  So what gets masked depends on what the court clerk tagged, plus what the software finds. That is a second, human source of inconsistency.
+
+**Consequence for this dataset.** The `pseudonymized` field is ЄДРСР output: court tags + ІСС's automatic masker + spot checks. It is not a careful annotation of the codifier. That is why the gold breaks the official rules in places (judges and enforcement officers masked, e-mail as ІНФОРМАЦІЯ, state bodies masked in some documents only; see §3). The `original` field looks reconstructed: the "real" entities are synthetic (ISO dates «2017-10-28», «Військова частина А1234», «UA2889999803…», «DF987654»).
 
 ---
 
-## 2. Official rule per label (codifier and law)
+## 2. Official rule per label (codifier + current law), ✅
 
-All four labels share one format: **`ЛЕЙБЛ_N`**, where **N «відповідає черговості появи цієї відомості у тексті судового рішення»** (order of first appearance) ✅. The same piece of information gets the same number on every repeat (codifier example: «Іванов Іван Іванович» → «ОСОБА_1») ✅.
+All four labels: **`ЛЕЙБЛ_N`**, where N «відповідає черговості появи цієї відомості у тексті судового рішення» (order of first appearance). The same piece of information keeps the same number.
 
-| Label | Official scope | Codifier example | Status |
+| Label | Codifier scope | Added by the current law | Codifier example |
 |---|---|---|---|
-| **ОСОБА_N** | name (ім'я, по батькові, прізвище) of a natural person who is a participant listed in the codifier annex (позивач, відповідач, третя особа, заявник, цивільний позивач, представник, свідок, поручитель, потерпілий, …) | «Іванов Іван Іванович» → «ОСОБА_1» | ✅ example; 🟡 annex |
-| **АДРЕСА_N** | «адреса місця проживання або перебування фізичних осіб» | street, building, flat, city → «АДРЕСА_1» | ✅ |
-| **НОМЕР_N** | phone number, **e-mail address**, vehicle registration number, identification number (РНОКПП), identity-document number, **bank account / card number**, any document number that identifies a natural person | phone «222-22-22» → «НОМЕР_1» | ✅ |
-| **ІНФОРМАЦІЯ_N** | «інша інформація, що дає можливість ідентифікувати фізичну особу» | author of a work «ТВІР» → «ІНФОРМАЦІЯ_1» | ✅ |
+| **ОСОБА_N** | name (прізвище, ім'я, по батькові) of any natural person in Annex 1 (59 roles, including lawyers and the catch-all «інша фізична особа»), **except officials acting in office** | names only via «інші відомості»; judges' and officials' exceptions removed from the law | «Іванов Іван Іванович» → «ОСОБА_1» |
+| **АДРЕСА_N** | address of residence or stay of a natural person | same | «Вул. Київська, кв. 1, буд. 1, м. Київ, 01001» → «АДРЕСА_1» (whole address, city and index included) |
+| **НОМЕР_N** | phone or other contact number, **e-mail**, vehicle registration number, identification number, any document number identifying a natural person | **bank account and payment card numbers**, РНОКПП, ID-document details, ЄДДР record number | phone «222-22-22» → «НОМЕР_1» |
+| **ІНФОРМАЦІЯ_N** | any other information identifying a natural person | closed-hearing information | author of «ТВІР» → «ІНФОРМАЦІЯ_1» |
 
-**Not masked, according to the law:**
-- the judges who made the decision (surname + initials);
-- officials and civil servants acting in office (prosecutors, state bodies' representatives);
-- parties of cited international-court cases (ЄСПЛ);
-- **legal entities and their codes/addresses**, because ст. 7 protects natural persons only (🟡: consistent across sources, no explicit quote);
-- case numbers, court names, dates of procedural acts.
+**Not masked under the official rules:**
+- **Officials acting in office.** Codifier п. 2: judges, prosecutors, court secretaries, investigators, enforcement officers, state bodies' representatives.
+- **Legal entities, their names, codes and addresses.** Every rule speaks of «фізична особа» only.
+- Case numbers, court names, dates of procedural acts.
+- ЄСПЛ parties were explicitly exempt in the 2012–2017 law. Since 2017 there is no explicit exemption, but they are not participants of the Ukrainian case.
 
 ---
 
@@ -64,20 +105,20 @@ All four labels share one format: **`ЛЕЙБЛ_N`**, where **N «відпові
 | surname only | 6 | «Шевченко», «Шидерової» |
 | two words (name + surname, foreign) | 4 | «Кудсіє Філіпп», «Аліни Степанової» |
 
-**Who is masked, against the law's exceptions:**
+**Who is masked, compared with the codifier:**
 
-| role (by the word before the name) | masked | left open |
-|---|---|---|
-| суддя / головуючий / склад колегії | **67** | 0 |
-| адвокат | 82 | 0 |
-| нотаріус | 48 | 0 |
-| державний / приватний виконавець | 14 | 0 |
-| представник | 6 | 0 |
+| role (by the word before the name) | masked | left open | codifier |
+|---|---|---|---|
+| суддя / головуючий / склад колегії | **67** | 0 | **not masked** (official acting in office) |
+| державний / приватний виконавець | 14 | 0 | state enforcement officer is an official, so **not masked**; a private one is debatable |
+| нотаріус | 48 | 0 | debatable (a private notary is not a civil servant) |
+| адвокат | 82 | 0 | **masked**: Annex 1 № 46 «особа, яка надає правову допомогу» |
+| представник | 6 | 0 | **masked**: Annex 1 (представник позивача / відповідача / …) |
 
-**Exception 1. Judges are masked.** This breaks ст. 7 (judges' surnames and initials are not protected) but is what the ЄДРСР masker does. Predict them as ОСОБА.
+**Exception 1. Judges and enforcement officers are masked, contrary to codifier п. 2.** The current law no longer exempts judges, so the masker treats them like anyone else. Predict them as ОСОБА.
 
 **Exception 2. What is never masked:**
-- ЄСПЛ case names («Пономарьов проти України», «Brualla Gomez de la Torre v. Spain»). This follows ст. 7 / Закон 4779-VI;
+- ЄСПЛ case names («Пономарьов проти України», «Brualla Gomez de la Torre v. Spain»). This was an explicit exception in 2012–2017 (Закон 4779-VI) and is still the practice;
 - honorific names inside institution titles («імені … полковника Євгенія Пікуса»);
 - «Верховна Рада» and other bodies;
 - street names («вул. Тараса Шевченка» stays inside АДРЕСА).
@@ -174,11 +215,13 @@ All four labels share one format: **`ЛЕЙБЛ_N`**, where **N «відпові
 
 ## Sources
 
-- Закон «Про доступ до судових рішень», ст. 7: [zakon.rada.gov.ua/go/3262-15](https://zakon.rada.gov.ua/go/3262-15), [protocol.ua](https://protocol.ua/ua/pro_dostup_do_sudovih_rishen_stattya_7/), [kodeksy.com.ua](https://kodeksy.com.ua/pro_dostup_do_sudovih_rishen/7.htm), [cn.court.gov.ua](https://cn.court.gov.ua/tu25/7/321)
-- Кодифікатор відомостей (наказ ДСА № 59 від 13.06.2006): [ki.court.gov.ua/tu11/14/36](https://ki.court.gov.ua/tu11/14/36), [lg.court.gov.ua/tu13/inshe/10/1](https://lg.court.gov.ua/tu13/inshe/10/1)
-- Інструкція (наказ ДСА № 37 від 14.05.2008): [zakon.rada.gov.ua/rada/show/v0037750-08](https://zakon.rada.gov.ua/rada/show/v0037750-08), [cn.court.gov.ua/tu25/7/326](https://cn.court.gov.ua/tu25/7/326)
-- Порядок ведення ЄДРСР (рішення ВРП № 1200/0/15-18): [zakon.rada.gov.ua/go/v1200910-18](https://zakon.rada.gov.ua/go/v1200910-18); amendments [v2364910-21](https://zakon.rada.gov.ua/go/v2364910-21); old КМУ № 740: [zakon.rada.gov.ua/laws/show/740-2006-п](https://zakon.rada.gov.ua/laws/show/740-2006-%D0%BF)
-- Names of international-court parties (Закон 4779-VI): [jurliga.ligazakon.net](https://jurliga.ligazakon.net/news/66309_znyata-zaborona-na-vkazvku-men-storn-v-tekstakh-rshen-mzhnarodnikh-sudv), [court.gov.ua/archive/16231](https://court.gov.ua/archive/16231/)
+Primary texts (downloaded 08.10.2026; verbatim copies in `analysis/legal/`):
+- Закон «Про доступ до судових рішень», ст. 7: current — [zakon.rada.gov.ua/laws/show/3262-15](https://zakon.rada.gov.ua/laws/show/3262-15); 2012–2017 wording — [ed20150212](https://zakon.rada.gov.ua/laws/show/3262-15/ed20150212)
+- Кодифікатор (наказ ДСА № 59 від 13.06.2006): status — [zakon.rada.gov.ua/go/v0059750-06](https://zakon.rada.gov.ua/go/v0059750-06); full text with Annex 1 — [lg.court.gov.ua/tu13/inshe/10/1](https://lg.court.gov.ua/tu13/inshe/10/1) (the copy on [ki.court.gov.ua/tu11/14/36](https://ki.court.gov.ua/tu11/14/36) stops at role 55)
+- Порядок ведення ЄДРСР (рішення ВРП № 1200/0/15-18): [zakon.rada.gov.ua/go/v1200910-18](https://zakon.rada.gov.ua/go/v1200910-18) (cover decision only); text — [protocol.ua](https://protocol.ua/ua/noviy_poryadok_vedennya_edinogo_dergavnogo_reestru_sudovih_rishen/); latest amendment — [v1807910-26](https://zakon.rada.gov.ua/go/v1807910-26)
+- Інструкція (наказ ДСА № 37 від 14.05.2008) — [v0037750-08](https://zakon.rada.gov.ua/rada/show/v0037750-08), cancelled by [v0017750-09](https://zakon.rada.gov.ua/go/v0017750-09)
+
+Secondary:
 - ДП «ІСС» automatic masking: [court.gov.ua/press/news/798803](https://court.gov.ua/press/news/798803/)
-- Judges not confidential (Пленум ВАСУ № 10, 2016): [nads.gov.ua PDF](https://nads.gov.ua/storage/app/sites/5/Dostup%20do%20publichnoi%20informacii/metod%20materiali/sudova-praktika.pdf); DEJURE on ст. 7: [dejure.foundation](https://dejure.foundation/chomu-znykayut-sudovi-rishennia/)
+- Names of international-court parties (Закон 4779-VI): [jurliga.ligazakon.net](https://jurliga.ligazakon.net/news/66309_znyata-zaborona-na-vkazvku-men-storn-v-tekstakh-rshen-mzhnarodnikh-sudv)
 - Draft law 7033-д: [zmina.ua PDF](https://zmina.ua/wp-content/uploads/sites/2/2024/11/7033-d-dopovnennya-argumentacziyi-red.pdf)
