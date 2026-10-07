@@ -269,7 +269,11 @@ def clean_person(text, s, e):
     frag = text[s:e]
     frag = frag.rstrip(" ,;:)(«»\"")
     lead = len(frag) - len(frag.lstrip(" ,;:)(«»\""))
-    return s + lead, s + len(frag)
+    e = s + len(frag)
+    # крапка ініціала, що водночас закінчує речення, у розмітку не входить
+    if re.search(r"(?<![\w'’ʼ-])[А-ЯІЇЄҐ]\.$", frag) and re.match(r"\s*$|[ \t]*\n|\s+[А-ЯІЇЄҐA-Z]", text[e:]):
+        e -= 1
+    return s + lead, e
 
 
 def pseudonymize(text, pers, extra=(), generic=False, rules=True):
