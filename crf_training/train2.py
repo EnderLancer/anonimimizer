@@ -1,7 +1,5 @@
-import os, pickle, sys
-import pycrfsuite
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from pseudonymizer.text import sent2feats
+import pickle, pycrfsuite
+from common import sent2feats
 data = pickle.load(open("train2.pkl", "rb"))
 n_val = 2000
 val, tr = data[:n_val], data[n_val:]
@@ -9,8 +7,8 @@ t = pycrfsuite.Trainer(verbose=False)
 for toks, lab in tr:
     t.append(sent2feats(toks), lab)
 t.set_params({"c1": 0.05, "c2": 0.05, "max_iterations": 100, "feature.possible_transitions": True})
-t.train(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "models", "crf2.model"))
-tg = pycrfsuite.Tagger(); tg.open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "models", "crf2.model"))
+t.train("crf2.model")
+tg = pycrfsuite.Tagger(); tg.open("crf2.model")
 from collections import Counter
 tp, fp, fn = Counter(), Counter(), Counter()
 def spans(l):

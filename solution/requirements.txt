@@ -1,8 +1,0 @@
---extra-index-url https://download.pytorch.org/whl/cpu
-# Рішення перевірено на Python 3.13 / Windows з цими версіями. Режим --mode regex бібліотек не потребує.
-spacy>=3.7,<3.9
-spacy-transformers>=1.3
-transformers>=4.40,<4.53
-torch
-python-crfsuite
-psutil

@@ -14,11 +14,8 @@ import sys
 
 import pandas as pd
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import build_train as B  # noqa: E402
-import os
-from pseudonymizer.text import tokenize  # noqa: E402
+import build_train as B
+from common import tokenize
 
 random.seed(11)
 rd, UP = B.rd, B.UP
@@ -164,7 +161,7 @@ def label(new, spans):
 
 
 def main(n_docs=3500, max_sents=90000):
-    df = pd.read_parquet(B.parquet_path())
+    df = pd.read_parquet(B.D + "court-decisions-uk/2024-court-decisions.parquet")
     df = df[df.text.str.len() < 60000].sample(n_docs, random_state=21)
     data = []
     for text in df.text:

@@ -1,11 +1,9 @@
-"""Токенізація та ознаки слів для CRF-моделі."""
 import re
 
 TOKEN = re.compile(r"\w+(?:['’ʼ`-]\w+)*|[^\w\s]", re.UNICODE)
 
 
 def tokenize(text):
-    """Повертає список (start, end) для кожного токена."""
     return [(m.start(), m.end()) for m in TOKEN.finditer(text)]
 
 
@@ -19,17 +17,17 @@ def shape(w):
 def word_feats(toks, i):
     w = toks[i]
     lw = w.lower()
-    return {
+    f = {
         "b": 1.0, "w": lw, "sh": shape(w),
         "p1": lw[:1], "p2": lw[:2], "p3": lw[:3],
         "s1": lw[-1:], "s2": lw[-2:], "s3": lw[-3:], "s4": lw[-4:],
         "up": w.isupper(), "ti": w.istitle(), "dig": any(c.isdigit() for c in w),
         "ln": min(len(w), 12), "al": w.isalpha(),
     }
+    return f
 
 
 def sent2feats(toks):
-    """Ознаки токенів речення: власні + контекст ±3 слова + біграми."""
     n = len(toks)
     base = [word_feats(toks, i) for i in range(n)]
     out = []
@@ -46,6 +44,7 @@ def sent2feats(toks):
                     f[f"{off}:s3"] = b["s3"]
             else:
                 f[f"{off}:pad"] = True
+        # біграм попереднього слова та форми
         if i > 0:
             f["bg:w"] = base[i - 1]["w"] + "|" + base[i]["w"]
             f["bg:sh"] = base[i - 1]["sh"] + "|" + base[i]["sh"]
