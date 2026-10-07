@@ -29,7 +29,7 @@ NUM_PATTERNS = [
     r"(?<![\w/.])\+?380\d{9}(?!\d)",
     r"(?<![\w/.])0\d{9}(?![\d/])",
     # IBAN
-    r"UA\s?\d{2}(?:\s?\d{4}){5}\s?\d{0,3}",
+    r"(?<![\w])UA\d{2}(?:\s?\d){25}(?!\d)",
     # номерні знаки (стандартні, діппредставництв, старі)
     rf"(?<![\w])[{PLATE_L}]{{2}}\s?\d{{4}}\s?[{PLATE_L}]{{2}}(?![\w])",
     rf"(?<![\w])\d{{5}}\s?[{CYR}]{{2}}(?![\w])",
@@ -53,7 +53,7 @@ KW_ID = (r"(?:РНОКПП|РНОКПП|ІПН|ідентифікаційн\w*\s
          r"картк\w*|IMEI|ІМЕІ|імеі|VIN|номер\w*\s+(?:кузова|шасі)|р/р|IBAN|"
          r"номер\w*\s+телефон\w*|телефон\w*|тел\.?|моб\.?|абонентськ\w+\s+номер\w*|сім-картк\w*|"
          r"номерн\w+\s+знак\w*|держ\w*\s+номер\w*|реєстраційн\w*\s+номер\w*|ДНЗ|д\.н\.з\.?|р/н|н/з|знак\w*)")
-CTX_NUM = re.compile(rf"(?i){KW_ID}{_SEP}(?:(?:серії|серія|серією)\s*)?{_VAL}")
+CTX_NUM = re.compile(rf"(?i)\b{KW_ID}{_SEP}(?:(?:серії|серія|серією)\s*)?{_VAL}")
 MIL = re.compile(rf"(?i)(?:в/ч|в\.ч\.|військов\w+\s+частин\w*|ВЧ)\s*[№N]?\s*([{CYR}{LAT}]{{0,2}}\s?-?\d{{3,5}})(?![\d/])")
 
 # ---- ІНФОРМАЦІЯ ----
@@ -121,7 +121,7 @@ TRIG = (r"(?i)(?:проживає|проживаючий|проживаючог�
         r"адрес\w+\s+(?:проживання|реєстрації|місця\s+\w+)|за\s+адресою)\s*(?:за\s+адресою)?\s*[:,]?\s*(?:а\s+саме\s*:?\s*)?")
 ADDR_NOSTREET = re.compile(
     rf"{TRIG}((?:{IDX}\s*,?\s*)?(?:{REGION}\s*,?\s*)?(?:{DIST}\s*,?\s*)?{CITY}(?:\s*,\s*{DIST})?)")
-ORG_CTX = re.compile(r"(?i)(?:суд\w*|прокуратур\w*|управлін\w*|відділ\w*|банк\w*|ТОВ|АТ|ПрАТ|нотаріус\w*|адреса\s+суду|АЗС|поліці\w+)")
+ORG_CTX = re.compile(r"(?i)(?:суд\w*|прокуратур\w*|управлін\w*|відділ\w*|банк\w*|(?-i:(?<!\w)(?:ТОВ|АТ|ПАТ|ПрАТ)(?!\w))|нотаріус\w*|адреса\s+суду|АЗС|поліці\w+)")
 PERSONAL_CTX = re.compile(r"(?i)(?:проживає|мешкає|мешканц\w+|зареєстрован\w+|проживаюч\w+|місц\w+\s+(?:проживання|реєстрації|перебування)|адрес\w+\s+(?:проживання|реєстрації))")
 
 
@@ -168,7 +168,7 @@ def spans_overlap(a, b):
 # далі маскуються всі повтори тієї ж організації в документі
 MIL_UNIT = re.compile(r"(?<![\w-])Військов\w+\s+частин\w+\s+[А-ЯA-Z]\s?\d{3,5}(?!\d)")
 PARTY_PRE = re.compile(r"(?i)(?:позов\w*|скарг\w*|заяв\w*)\s[^.;]{0,160}?(?<![\w-])до\s*$|\(далі\s*[-–—]?\s*$|зобов['’]язати\s*$|дії\s*$")
-PARTY_POST = re.compile(r"\s*\(далі")
+PARTY_POST = re.compile(r"\s*\(далі\b")
 def _org_key(t):
     q = re.search(r"[«\"“„]([^«»\"“”„]+)", t)
     if q:
@@ -183,8 +183,22 @@ def party_orgs(text):
             keys.add(_org_key(text[s:e]))
     return [(s, e, "ІНФОРМАЦІЯ") for s, e in cands if _org_key(text[s:e]) in keys]
 
+VP_NUM = re.compile(r"(?<![\w])ВП\s*№\s*(\d{8,10})(?!\d)")
+ID10 = re.compile(r"(?i)(?:РНОКПП|ІПН|ідентифікаційн\w*\s+(?:код|номер)\w*|(?<!\w)код|(?<!\w)о/р)[^\d\n]{0,25}?(\d{10})(?!\d)")
+# номери, що не стосуються особи: кадастрові, акти готовності, квитанції, записи реєстрів, поштові, номери справ
+NUM_NEG = re.compile(r"(?i)(?:кадастров\w*\s+номер\w*(?:\s+земельної\s+ділянки)?|готовн\w+\s+(?:до\s+експлуатації\s+)?об['’]?єкта?\w*(?:\s+до\s+експлуатації)?|квитанці\w+|номер\w*\s+запис\w*|поштового\s+відправлення|справ\w*)\s*[:№]?\s*$")
+ISSUED = re.compile(r"(?i)видан\w*\s*$")
+
+
+def treasury_iban(frag):
+    """Рахунки казначейства (код 899998) розмітка не маскує."""
+    return "899998" in re.sub(r"\s", "", frag)[4:10]
+
+
 def rule_spans(text, pers=()):
     out = []
+    out += [(m.start(1), m.end(1), "НОМЕР") for m in VP_NUM.finditer(text)]
+    out += [(m.start(1), m.end(1), "НОМЕР") for m in ID10.finditer(text)]
     for r in NUM_RE:
         for m in r.finditer(text):
             out.append((m.start(), m.end(), "НОМЕР"))
@@ -208,6 +222,8 @@ def rule_spans(text, pers=()):
         out.append((m.start(), m.end(), "ІНФОРМАЦІЯ"))
     for m in DATE_ALL_RE.finditer(text):
         ctx = text[max(0, m.start() - 45):m.start()] + " " + text[m.end():m.end() + 25]
+        if ISSUED.search(text[max(0, m.start() - 12):m.start()]):
+            continue
         if BIRTH_CTX.search(ctx) or DEATH_CTX.search(text[max(0, m.start() - 30):m.start()]):
             out.append((m.start(), m.end(), "ІНФОРМАЦІЯ"))
     for m in YEAR_BIRTH.finditer(text):
@@ -264,6 +280,7 @@ def pseudonymize(text, pers, extra=(), generic=False):
             spans.append((s, e, "ОСОБА"))
     pers_spans = [(a, b) for a, b, t in spans if t == "ОСОБА"]
     cand = list(rule_spans(text, pers_spans)) + [tuple(x) for x in extra]
+    cand = [c for c in cand if not (c[2] == "НОМЕР" and (NUM_NEG.search(text[max(0, c[0] - 70):c[0]]) or treasury_iban(text[c[0]:c[1]])))]
     for sp in sorted(cand, key=lambda x: -(x[1] - x[0])):
         if not any(spans_overlap(sp, o) for o in spans):
             spans.append(sp)
