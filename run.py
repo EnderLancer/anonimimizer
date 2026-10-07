@@ -10,7 +10,7 @@ python run.py cases.jsonl out.jsonl --ner "hf:dslim/bert-base-NER?aggregation=fi
 
 Формат вхідного рядка: {"id": ..., "original": "текст"}. Вихід: {"id", "annotations": [{start, end, pseudonym}]}.
 """
-import argparse, json, os
+import argparse, json, os, re
 import predict_trf as P
 import ner_adapters as N
 import ner_postprocess as NP
@@ -42,6 +42,34 @@ def parse_label_map(items):
             raise SystemExit(f"--ner-label {it}: тип має бути одним із {', '.join(N.TYPES)} (з * — лише як частина сусіднього)")
         m[k.strip().upper()] = v or None
     return m
+
+
+INI_END = re.compile(r"(?<![\w'’ʼ-])[А-ЯІЇЄҐ]\.\s?(?:[А-ЯІЇЄҐ]\.)?$")
+
+
+def merge_persons(text, model, regex):
+    """Об'єднує фрагменти моделі з regex-ПІБ, що з ними перетинаються, і склеює сусідні фрагменти осіб.
+    Модель часто губить прізвище перед «Ім'я По-батькові», по батькові чи ініціали; regex-спан їх повертає.
+    Не розширює вправо після «І. П.» (там починається наступне речення)."""
+    spans = [[s, e] for s, e, *_ in model]
+    for s, e, _ in regex:
+        hit = [p for p in spans if s < p[1] and p[0] < e]
+        if not hit:
+            spans.append([s, e]); continue
+        lo, hi = min([s] + [p[0] for p in hit]), max([e] + [p[1] for p in hit])
+        right = max(p[1] for p in hit)
+        if hi > right and INI_END.search(text[lo:right]):
+            hi = right                                               # «Іванов І. П.» + «І. П. Суд» -> без «Суд»
+        spans = [p for p in spans if p not in hit] + [[lo, hi]]
+    spans.sort()
+    out = []
+    for s, e in spans:
+        if out and (s <= out[-1][1] or (re.fullmatch(r"[ \t]+", text[out[-1][1]:s])
+                                        and not INI_END.search(text[out[-1][0]:out[-1][1]]))):
+            out[-1][1] = max(out[-1][1], e)
+        else:
+            out.append([s, e])
+    return [[s, e, text[s:e]] for s, e in out]
 
 
 def main():
@@ -76,9 +104,7 @@ def annotate(text, spans, mode="full", tagger=None):
     extra = [(x.start, x.end, x.label) for x in spans if x.label != "ОСОБА"]       # інші типи, якщо модель їх дає
     if mode == "model":                                                  # лише модель: без regex-осіб і правил
         return P.pseudonymize(text, pers, extra=extra, rules=False)
-    for s, e, _ in rx_persons(text):                                     # + regex-особи, що не перетинаються з моделлю
-        if not any(s < p[1] and p[0] < e for p in pers):
-            pers.append([s, e, text[s:e]])
+    pers = merge_persons(text, pers, rx_persons(text))                  # модель ∪ regex-ПІБ
     if mode == "full" and tagger:
         import predict
         extra += [x for x in predict.predict_doc(tagger, text) if x[2] in ("НОМЕР", "ІНФОРМАЦІЯ", "АДРЕСА")]
