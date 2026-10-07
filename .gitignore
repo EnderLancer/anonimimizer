@@ -7,3 +7,11 @@ venv/
 
 # OS / editor
 .DS_Store
+
+# data artifacts
+data/train/
+data/silver/
+data/resources/
+!data/silver/REPORT.md
+!data/silver/audit/metrics.json
+datagen/.venv/
