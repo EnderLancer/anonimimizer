@@ -28,8 +28,12 @@ def load_model():
     return nlp
 
 
-def _cache_path(doc_id: str) -> Path:
-    return CACHE / f"{doc_id}.json"
+def _cache_path(doc_id: str, text: str | None = None) -> Path:
+    """Cache key includes a hash of the text: a regenerated document (new synthetic fills, new offsets) is recomputed."""
+    import hashlib
+
+    h = hashlib.sha1(text.encode("utf-8")).hexdigest()[:10] if text is not None else "legacy"
+    return CACHE / f"{doc_id}-{h}.json"
 
 
 def run_ner_cache(src: str = "02_labeled", batch: int = 8, limit: int | None = None) -> None:
@@ -38,7 +42,7 @@ def run_ner_cache(src: str = "02_labeled", batch: int = 8, limit: int | None = N
     docs = list(read_jsonl(step_path(src)))
     if limit:
         docs = docs[:limit]
-    todo = [d for d in docs if not _cache_path(d["id"]).exists()]
+    todo = [d for d in docs if not _cache_path(d["id"], d["text"]).exists()]
     log.info("NER: %d documents to process", len(todo))
     if not todo:
         return
@@ -50,7 +54,7 @@ def run_ner_cache(src: str = "02_labeled", batch: int = 8, limit: int | None = N
         for d, doc in zip(chunk, nlp.pipe([d["text"] for d in chunk], batch_size=batch)):
             ents = [{"start": e.start_char, "end": e.end_char, "label": e.label_, "text": e.text}
                     for e in doc.ents if e.label_ == "PERS"]
-            _cache_path(d["id"]).write_text(json.dumps(ents, ensure_ascii=False), encoding="utf-8")
+            _cache_path(d["id"], d["text"]).write_text(json.dumps(ents, ensure_ascii=False), encoding="utf-8")
         done += len(chunk)
         if done % 200 < batch:
             rate = done / (time.time() - t0)
@@ -58,7 +62,7 @@ def run_ner_cache(src: str = "02_labeled", batch: int = 8, limit: int | None = N
 
 
 def apply_ner(doc: dict) -> dict:
-    cp = _cache_path(doc["id"])
+    cp = _cache_path(doc["id"], doc["text"])
     if not cp.exists():
         return doc
     text = doc["text"]

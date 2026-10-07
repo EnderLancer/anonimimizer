@@ -24,21 +24,28 @@ class NumberGenerator:
         if subtype == "rnokpp":
             return str(r.randint(1, 3)) + self._digits(9, first_nonzero=False)
         if subtype == "iban":
-            return f"UA{r.randint(10, 99)}{r.choice(BANK_CODES)}0000026{self._digits(12, first_nonzero=False)}"
+            iban = f"UA{r.randint(10, 99)}{r.choice(BANK_CODES)}0000026{self._digits(12, first_nonzero=False)}"
+            if r.random() < 0.15:  # grouped by 4
+                iban = " ".join(iban[i: i + 4] for i in range(0, len(iban), 4))
+            return iban
         if subtype == "card":
             return " ".join(self._digits(4, first_nonzero=False) for _ in range(4))
         if subtype == "phone":
             op = r.choice(["050", "066", "095", "099", "067", "068", "096", "097", "098", "063", "073", "093"])
             a, b, c = self._digits(3, False), self._digits(2, False), self._digits(2, False)
-            return r.choice([f"+38{op}{a}{b}{c}", f"{op}{a}{b}{c}", f"{op}-{a}-{b}-{c}", f"{op} {a} {b} {c}", f"({op}) {a}-{b}-{c}"])
+            return r.choice([f"+38{op}{a}{b}{c}", f"+38 ({op}) {a}-{b}-{c}", f"+38 {op} {a} {b} {c}", f"{op}{a}{b}{c}",
+                             f"{op}-{a}-{b}-{c}", f"{op} {a} {b} {c}", f"({op}) {a}-{b}-{c}", f"38{op}{a}{b}{c}"])
         if subtype == "passport":
-            if r.random() < 0.7:
-                return r.choice(PASSPORT_SERIES) + ("" if r.random() < 0.7 else " ") + self._digits(6, False)
-            return self._digits(9)
+            if r.random() < 0.65:
+                series = r.choice(PASSPORT_SERIES)
+                return r.choice([f"{series}{self._digits(6, False)}", f"{series} {self._digits(6, False)}",
+                                 f"{series} № {self._digits(6, False)}", f"серії {series} № {self._digits(6, False)}",
+                                 f"серія {series} номер {self._digits(6, False)}"])
+            return r.choice([self._digits(9), f"№ {self._digits(9)}", f"{self._digits(9)} (УНЗР {self._digits(8, False)}-{self._digits(5, False)})"])
         if subtype == "svidotstvo":
             return r.choice(PASSPORT_SERIES) + r.choice(["", " ", "-"]) + self._digits(6, False)
         if subtype == "military":
-            return r.choice(["А", "А", "А", "В", "Т", "АІ"]) + self._digits(4, False)
+            return r.choice(["А", "А", "А", "В", "Т", "АІ", "A"]) + self._digits(4, False)
         if subtype == "vehicle":
             l1 = "".join(r.choice(CYR) for _ in range(2))
             l2 = "".join(r.choice(CYR) for _ in range(2))

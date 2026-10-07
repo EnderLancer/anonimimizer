@@ -5,6 +5,7 @@ import datetime as dt
 import json
 import random
 
+from silver.fill.orgs import OrgGenerator
 from silver.fill.persons import Person, translit
 from silver.io import RESOURCES
 
@@ -19,6 +20,7 @@ class InfoGenerator:
         d = json.loads((RESOURCES / "orgs.json").read_text(encoding="utf-8"))
         self.orgs = d["orgs"]
         self.military_names = d["military_names"]
+        self.org_gen = OrgGenerator(rng)
 
     def _date(self, y0: int, y1: int) -> dt.date:
         y = self.rng.randint(y0, y1)
@@ -37,15 +39,18 @@ class InfoGenerator:
 
     def generate(self, subtype: str, hints: dict, person: Person | None) -> str:
         r = self.rng
-        if subtype in ("dob", "death", "other"):
+        if subtype == "other":
+            # unknown context: ЄДРСР marked PD here; most such placeholders are institution / unit names, the rest dates
+            return self.org_gen.institution() if r.random() < 0.6 else self.generate("dob", {}, person)
+        if subtype in ("dob", "death"):
             y0, y1 = (1945, 2012) if subtype == "dob" else (1995, 2024)
             d = self._date(y0, y1)
             if hints.get("style") == "numeric":
                 return self.render_date(d, "numeric")
             if hints.get("no_roku"):
                 return self.render_date(d, r.choice(["words", "words", "numeric"]))
-            style = r.choices(["numeric", "iso", "words_roku", "words_narodzh" if subtype == "dob" else "words_roku"],
-                              [55, 15, 20, 10])[0]
+            style = r.choices(["numeric", "iso", "words_roku", "words_narodzh" if subtype == "dob" else "words_roku", "words"],
+                              [40, 15, 20, 15, 10])[0]
             return self.render_date(d, style)
         if subtype == "email":
             if person and r.random() < 0.7:
@@ -64,9 +69,7 @@ class InfoGenerator:
             base = translit(person.surname) if person else "user"
             return r.choice([f"@{base}{r.randint(1, 999)}", f"{base}_{r.randint(10, 99)}", f"@{base}.official"])
         if subtype == "military_name":
-            if r.random() < 0.6:
-                return f"Військова частина {r.choice(['А', 'А', 'В', 'Т'])}{r.randint(1000, 9999)}"
-            return r.choice(self.military_names)
+            return self.org_gen.unit_name()
         if subtype == "org":
-            return r.choice(self.orgs)
+            return self.org_gen.institution()
         return self.render_date(self._date(1950, 2010), "numeric")

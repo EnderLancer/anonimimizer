@@ -50,7 +50,7 @@ def _stratified(docs: list[dict], n: int, rng: random.Random) -> list[dict]:
 def run_audit(seed: int = 42, src: str = "02_labeled", n: int = 1000) -> None:
     AUDIT.mkdir(parents=True, exist_ok=True)
     rng = random.Random(seed)
-    docs = [d for d in read_jsonl(step_path(src)) if _cache_path(d["id"]).exists()]
+    docs = [d for d in read_jsonl(step_path(src)) if _cache_path(d["id"], d["text"]).exists()]
     if not docs:
         log.warning("audit: no documents with NER cache yet")
         return
@@ -62,7 +62,7 @@ def run_audit(seed: int = 42, src: str = "02_labeled", n: int = 1000) -> None:
         text = d["text"]
         persons = [l for l in d["labels"] if l["type"] == "ОСОБА"]
         placeholders = [l for l in d["labels"] if l["source"] == "placeholder"]
-        ents = json.loads(_cache_path(d["id"]).read_text(encoding="utf-8"))
+        ents = json.loads(_cache_path(d["id"], d["text"]).read_text(encoding="utf-8"))
         for e in ents:
             if any(_iou(e, l) >= 0.5 or (l["start"] <= e["start"] and e["end"] <= l["end"]) for l in persons + placeholders):
                 status["labeled"] += 1

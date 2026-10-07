@@ -82,8 +82,6 @@ class Filler:
                     infos[idx] = (st, self.info.generate(st, hints, last_person), hints)
                     self.stats[f"info_{st}"] += 1
                 value = infos[idx][1]
-                if st == "other":
-                    mask_reason = "info_unknown"
             out.append(value)
             end = start + len(value)
             if mask_reason:

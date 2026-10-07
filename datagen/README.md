@@ -52,6 +52,15 @@ Steps and intermediate files: `filter` → `00_filtered.jsonl`, `fill` → `01_f
 so `python ../data/evaluate.py ../data/silver/dev.jsonl <submission>` scores a model on dev
 exactly like on the test set. The test set itself is never read by this module.
 
+## Data versions
+
+- **v1** (2026-10-06): 6 address templates, 195 embedded streets, ІНФОРМАЦІЯ with unknown context masked.
+  Test score of the model trained on it: 0.824 (АДРЕСА recall 0.62, ІНФОРМАЦІЯ recall 0.53).
+- **v2** (2026-10-07): 14 address templates incl. «по вулиці …» with inflection, 1 471 real streets and 1 068 settlements
+  mined from court addresses in the ЄДРСР corpus, combinatorial institution / ТЦК / military-unit names, ІНФОРМАЦІЯ with
+  unknown context filled with an institution (60 %) or a date (40 %) and **labelled**, more НОМЕР formats
+  (passport «серія … №», IBAN grouped by 4, phone variants, УНЗР).
+
 ## Layout
 
 ```

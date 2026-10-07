@@ -47,3 +47,10 @@ def test_windows_cover_whole_text():
     starts = [min(s for (s, e) in w["offsets"] if (s, e) != (0, 0)) for w in windows]
     ends = [max(e for (s, e) in w["offsets"]) for w in windows]
     assert all(starts[i + 1] < ends[i] for i in range(len(windows) - 1))
+
+
+def test_long_window_encoding():
+    text = ("Позов Коваля Івана Петровича до Шевченко Ольги Іванівни задоволено. " * 120).strip()
+    windows = encode(TOK, text, [], [], window=4096, stride=512, pad=False)
+    assert len(windows) == 1 and len(windows[0]["input_ids"]) <= 4096
+    assert max(e for (s, e) in windows[0]["offsets"]) == len(text)

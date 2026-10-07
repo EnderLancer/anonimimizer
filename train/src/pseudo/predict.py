@@ -20,7 +20,9 @@ def best_device() -> str:
 
 @torch.no_grad()
 def predict_doc(model, tokenizer, text: str, device: str, batch: int = 16) -> list[dict]:
-    windows = encode(tokenizer, text, [], [], pad=True)
+    window = getattr(model.config, "pseudo_window", 512)
+    stride = getattr(model.config, "pseudo_stride", 128)
+    windows = encode(tokenizer, text, [], [], window=window, stride=stride, pad=True)
     preds = []
     for i in range(0, len(windows), batch):
         chunk = windows[i: i + batch]

@@ -37,7 +37,8 @@ def run_report() -> None:
     lines += ["", "## Known limitations", "",
               "- grammatical case of synthetic names is guessed from the left context (heuristic); mismatches remain in a minority of mentions",
               "- addresses are synthetic (embedded street/city lists), not from a real address registry",
-              "- ІНФОРМАЦІЯ placeholders with unrecognised context are filled with a date and masked (-100), not labelled",
+              "- ІНФОРМАЦІЯ placeholders with unrecognised context are filled with an institution / unit name (60 %) or a date (40 %) and labelled",
+              "- street and settlement names are mined from ЄДРСР court addresses; address formats are 14 templates",
               "- open IBAN/phone/plate values without a clear personal context are masked, not labelled",
               "- test set (data/test) was never used to build or tune this data"]
     (SILVER / "REPORT.md").write_text("\n".join(lines) + "\n", encoding="utf-8")

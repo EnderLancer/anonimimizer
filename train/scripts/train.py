@@ -28,9 +28,15 @@ def main() -> None:
     ap.add_argument("--no-fp16", action="store_true")
     ap.add_argument("--push-to", default=None, help="HF Hub repo id to push the model to")
     ap.add_argument("--max-windows", type=int, default=None, help="debug: cap training windows")
+    ap.add_argument("--window", type=int, default=512, help="tokens per window (e.g. 4096 for long-context models)")
+    ap.add_argument("--stride", type=int, default=128, help="overlap between consecutive windows in tokens")
+    ap.add_argument("--no-masks", action="store_true", help="ablation: ignore masks (masked spans become O)")
+    ap.add_argument("--grad-checkpointing", action="store_true", help="trade compute for memory (long windows)")
+    ap.add_argument("--skip-if-done", default=None, help="directory of a previous run (e.g. on Drive); skip when its fingerprint matches")
     a = ap.parse_args()
     run(a.model, Path(a.out), a.n_docs, a.dev_docs, a.epochs, a.lr, a.batch, a.grad_accum, a.seed, a.oversample_number,
-        not a.no_fp16, a.push_to, a.max_windows)
+        not a.no_fp16, a.push_to, a.max_windows, window=a.window, stride=a.stride, use_masks=not a.no_masks,
+        grad_checkpointing=a.grad_checkpointing, skip_if_done=Path(a.skip_if_done) if a.skip_if_done else None)
 
 
 if __name__ == "__main__":
