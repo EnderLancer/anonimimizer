@@ -105,7 +105,7 @@ So only about **1.7 of the 8.27 points are real pipeline errors**. About 6.6 poi
 | different initials merged | 116149927 (Михайлова Н. О. / Н. М.), 116149911 (Олійник А. С. / Святослав Сергійович), 116177386 (Разумовська М. А. / Апатенко М. А.) | model |
 | one person split: «Кравець Р. Ю.» vs «Кравця Р. Ю.» (inflected surname + initials) | 116177310 | model |
 | gold gives one person two labels | 116234778 «Гварамадзе Левана / Леван Зурабович», 116205945 «Підлубний Е. С.» / «Підлубного Едуарда Станіславовича» | gold |
-| gold gives two people one label | 116206025 «Тимченко Олександр Миколайович» = «Тимошенко Максим Олександрович»; 116234813 «Шевченко» under Петренко's label | gold |
+| gold gives two people one label | 116206025 «Тимченко Олександр Миколайович» = «Тимошенко Максим Олександрович» (116234813 «Шевченко» under Петренко's label is correct: it is her maiden name, «дівоче прізвище Шевченко») | gold |
 
 ### Boundary-only errors (strict F1): 62
 
@@ -133,3 +133,29 @@ The full list is in `out/strict.csv` and at the end of `out/cases.md`. Most are 
 | clustering: no union-chaining; a mention with full name + patronymic must not join a group whose full mention has a different first name | B³ | `predict.cluster_persons` |
 
 The other 6.6 points (state bodies, companies, «Військова частина», full names marked ІНФОРМАЦІЯ) cannot be won by any consistent predictor: the same string is masked in one document and left open in another. If only those annotation-side cases were corrected, the **current predictions would score .983** (ІНФОРМАЦІЯ .748 → .992).
+
+## Corrected gold: `data/test/court_cases_fixed.jsonl`
+
+`python analysis/fix_gold.py` writes corrected copies of **only the 18 documents whose gold annotation is wrong**, in the original schema. `annotations`, `annotations_by_pseudonym` and `pseudonymized` are rebuilt. Each document also gets a `corrections` list: `action`, `before`, `after`, `description` (why it is wrong) and `legal_reference` (ст. 7 Закону «Про доступ до судових рішень» and/or the ДСА codifier № 59; texts in `legal/`).
+
+| action | fixes | mentions | what |
+|---|---|---|---|
+| relabel | 3 | 12 | full names marked ІНФОРМАЦІЯ → ОСОБА (2 docs); addresses marked ІНФОРМАЦІЯ → АДРЕСА |
+| reboundary_relabel | 2 | 4 | «Військова частина А1234» as ІНФОРМАЦІЯ → «А1234» as НОМЕР (dataset convention) |
+| resplit | 3 | 6 | boundary in the wrong place: «15» \| «листопада 2020 року Шевченко…», «Петренко» \| «Аліси Володимирівни DF987654», «Шидерової» \| «Н. С. e-mail» |
+| trim / extend | 7 | 7 | role word «адвокат», «, розташованого за адресою:», sentence comma or dot inside the span; an initial's dot dropped mid-sentence |
+| merge / split | 3 | 4 | one person with two labels (Гварамадзе, Підлубний); two names under one label (Тимченко / Тимошенко) |
+| add | 2 | 5 | unmasked natural person «Туйчієвій Одінахон»; unmasked real-estate registration number (×4) |
+
+All 18 documents also had 1–8 labels with stray whitespace («ОСОБА_1 »), stripped and noted as `normalize_label` (108 such labels in the whole test set; scoring ignores them).
+
+Validated with the official `data/evaluate.py`, which accepts the file, and an integrity check (entity = text slice, no overlaps, `pseudonymized` rebuilds exactly). Our `results/full.jsonl` scores **0.753 → 0.895** on these 18 documents and **0.9173 → 0.9289** on all 240 with the fixes applied. Deanonymization risk drops from 4/862 to 3/864 persons.
+
+**Not changed on purpose**, because these are systematic dataset conventions rather than one-off errors (see `LABELING_RULES.md`):
+- judges and enforcement officers are masked, although the codifier exempts officials acting in office;
+- «А1234» is НОМЕР;
+- e-mail is ІНФОРМАЦІЯ, although the codifier says НОМЕР;
+- state bodies and companies are masked in some documents only;
+- an initial's dot is dropped at sentence end;
+- ЄСПЛ case names are left open;
+- cadastral and bank-contract numbers are left open.
