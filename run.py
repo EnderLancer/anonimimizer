@@ -21,7 +21,7 @@ DEFAULT_NER = "spacy:" + P.MODEL
 def ner_spans(rows, spec=DEFAULT_NER, label_map=None):
     """Фрагменти моделі, зведені до типів челенджу; результат кешується (для моделі за замовчуванням — у ner_cache.json)."""
     raw = N.run_ner(rows, spec, N.cache_path(spec, DEFAULT_NER, P.CACHE))
-    return {k: N.map_labels(v, label_map) for k, v in raw.items()}
+    return {str(r["id"]): N.map_labels(raw[str(r["id"])], label_map, r["original"]) for r in rows}
 
 
 def parse_label_map(items):
