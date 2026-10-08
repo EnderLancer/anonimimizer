@@ -7,3 +7,13 @@ venv/
 
 # OS / editor
 .DS_Store
+
+# Project
+out/
+solution/models/spacy/
+solution/training/*.pkl
+*.pkl
+ner_cache*.json
+
+# кеш виходу NER на тесті потрібен для запуску без моделі
+!ner_cache.json

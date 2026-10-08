@@ -1,0 +1,107 @@
+# Evaluation pipeline:
+#   Test data ──► run.py --mode <mode> ──► data/evaluate.py ──► result %
+#                                              ▲
+#   Expected result ───────────────────────────┘
+#
+#   run.py   NER (з ner_cache.json) + regex-особи + правила (+ CRF у режимі full), злиття і псевдоніми.
+#            Режим model: лише NER-модель (ОСОБА), без regex-осіб, правил і CRF.
+#            Читає з тестового файлу лише id та original, анотацій не бачить.
+#
+# ner_cache.json уже містить вихід spaCy-моделі для всього тесту, тож модель у CI не завантажується
+# і шардування не потрібне: кожен режим іде кілька секунд. Потрібен лише python-crfsuite
+# (predict.py імпортує його в усіх режимах).
+name: Evaluation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      min_score:
+        description: "Fail the run if the score (%) is below this value"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+# новий push скасовує застарілий запуск того самого PR / гілки
+concurrency:
+  group: evaluation-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TEST_DATA: data/test/court_cases.jsonl   # contains both the inputs and the expected annotations
+
+jobs:
+  evaluate:
+    name: Evaluate (${{ matrix.mode }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [model, regex, model_regex, full]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install python-crfsuite
+
+      - name: Check NER cache covers the test data
+        if: matrix.mode != 'regex'
+        run: |
+          python - <<'EOF'
+          import json
+          cache = json.load(open("ner_cache.json", encoding="utf8"))
+          ids = [str(json.loads(l)["id"]) for l in open("data/test/court_cases.jsonl", encoding="utf8") if l.strip()]
+          missing = [i for i in ids if i not in cache]
+          assert not missing, f"{len(missing)} documents are not in ner_cache.json, e.g. {missing[:5]}"
+          EOF
+
+      - name: Run pipeline
+        run: |
+          mkdir -p out
+          python run.py "$TEST_DATA" out/submission.jsonl --mode ${{ matrix.mode }}
+
+      - name: Check against expected result
+        run: python data/evaluate.py "$TEST_DATA" out/submission.jsonl --json > out/result.json
+
+      - name: Result %
+        env:
+          MIN_SCORE: ${{ inputs.min_score || vars.MIN_SCORE }}
+        run: |
+          {
+            echo "### Mode: \`${{ matrix.mode }}\`"
+            echo '```'
+            python data/evaluate.py "$TEST_DATA" out/submission.jsonl 2>/dev/null
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          python - <<'EOF'
+          import json, os, sys
+          score = 100 * json.load(open("out/result.json", encoding="utf8"))["final_score"]
+          print(f"Score: {score:.2f}%")
+          m = os.environ.get("MIN_SCORE")
+          if m and score < float(m):
+              sys.exit(f"Score {score:.2f}% is below the threshold {float(m):.2f}%")
+          EOF
+
+      - name: Check committed results are up to date
+        run: |
+          if ! cmp -s out/submission.jsonl results/${{ matrix.mode }}.jsonl; then
+            echo "::warning::results/${{ matrix.mode }}.jsonl differs from this run; regenerate it with run.py"
+          fi
+
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: evaluation-results-${{ matrix.mode }}
+          path: |
+            out/submission.jsonl
+            out/result.json
+          if-no-files-found: ignore
