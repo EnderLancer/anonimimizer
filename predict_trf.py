@@ -272,14 +272,14 @@ def clean_person(text, s, e):
     return s + lead, s + len(frag)
 
 
-def pseudonymize(text, pers, extra=(), generic=False):
+def pseudonymize(text, pers, extra=(), generic=False, rules=True):
     spans = []
     for s, e, _ in pers:
         s, e = clean_person(text, s, e)
         if e > s and re.search(r"[^\W\d_]", text[s:e]):
             spans.append((s, e, "ОСОБА"))
     pers_spans = [(a, b) for a, b, t in spans if t == "ОСОБА"]
-    cand = list(rule_spans(text, pers_spans)) + [tuple(x) for x in extra]
+    cand = (list(rule_spans(text, pers_spans)) if rules else []) + [tuple(x) for x in extra]
     cand = [c for c in cand if not (c[2] == "НОМЕР" and (NUM_NEG.search(text[max(0, c[0] - 70):c[0]]) or treasury_iban(text[c[0]:c[1]])))]
     for sp in sorted(cand, key=lambda x: -(x[1] - x[0])):
         if not any(spans_overlap(sp, o) for o in spans):

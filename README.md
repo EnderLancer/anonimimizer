@@ -8,6 +8,7 @@
 
 | Конфігурація | ОСОБА | АДРЕСА | НОМЕР | ІНФОРМАЦІЯ | **Середнє F1** | Strict F1 | Ризик деанонімізації ↓ | Консистентність (B³) |
 |---|---|---|---|---|---|---|---|---|
+| 0. Model only | .982 (.977 / .987) | 0 | 0 | 0 | **.246** | .237 | .081 (70/862) | .995 |
 | 1. Regex only | .985 (.987 / .984) | .955 (.949 / .961) | .965 (.981 / .949) | .738 (.686 / .800) | **.911** | .858 | .052 (45/862) | .994 |
 | 2. Model + regex | **.987** (.976 / .999) | .955 (.949 / .961) | .965 (.981 / .949) | .742 (.687 / .806) | **.912** | .857 | .051 (44/862) | .995 |
 | 3. Model + regex + CRF | **.987** (.976 / .999) | **.960** (.946 / .974) | **.972** (.977 / .966) | **.748** (.690 / .817) | **.917** | **.869** | .051 (44/862) | .995 |
@@ -21,6 +22,7 @@
 ## Запуск
 
 ```bash
+python run.py cases.jsonl out.jsonl --mode model         # 0. лише NER-модель (ОСОБА), без правил
 python run.py cases.jsonl out.jsonl --mode regex         # 1. лише правила
 python run.py cases.jsonl out.jsonl --mode model_regex   # 2. NER-модель + правила
 python run.py cases.jsonl out.jsonl --mode full          # 3. + CRF (найкраще)
@@ -28,7 +30,7 @@ python run.py cases.jsonl out.jsonl --mode full          # 3. + CRF (найкр�
 
 Оцінка: офіційним `evaluate.py` організаторів: `python data/evaluate.py data/test/court_cases.jsonl results/full.jsonl`. CI (`.github/workflows/evaluate.yml`) на кожен PR і push у main проганяє всі три режими на тесті й пише результат у summary.
 
-Для режимів 2 і 3 потрібна модель `uk_ner_web_trf_13class` (spaCy): покладіть її в `models/uk_ner_web_trf_13class` або задайте шлях змінною `UK_NER_MODEL`. Вихід моделі для тесту вже збережено в `ner_cache.json`, тому на тесті інференс не запускається. Для режиму 3 потрібен пакет `python-crfsuite`.
+Для режимів 0, 2 і 3 потрібна модель `uk_ner_web_trf_13class` (spaCy): покладіть її в `models/uk_ner_web_trf_13class` або задайте шлях змінною `UK_NER_MODEL`. Вихід моделі для тесту вже збережено в `ner_cache.json`, тому на тесті інференс не запускається. Для режиму 3 потрібен пакет `python-crfsuite`.
 
 ## Як це працює
 
