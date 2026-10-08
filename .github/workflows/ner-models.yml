@@ -274,6 +274,13 @@ jobs:
           args=(); for l in $NER_LABELS; do args+=(--ner-label "$l"); done
           python run.py out/data.jsonl out/submission.jsonl --mode "$MODE" --ner "$NER" "${args[@]}"
 
+      - name: Cache embedding model
+        if: needs.setup.outputs.cosine == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: cosine-${{ needs.setup.outputs.cosine_model }}
+
       - name: Result %
         env:
           COSINE: ${{ needs.setup.outputs.cosine }}
@@ -285,7 +292,8 @@ jobs:
           {
             echo "### Mode: \`$MODE\`, NER: \`$NER\`${NER_LABELS:+, labels: \`$NER_LABELS\`}"
             echo '```'
-            python data/evaluate.py out/data.jsonl out/submission.jsonl "${cos[@]}" 2>/dev/null
+            # текстовий звіт з готового result.json: без другого прогону оцінки (з cosine — повторного рахування ембедингів)
+            python -c 'import json, sys; sys.path.insert(0, "data"); import evaluate; evaluate.print_report(json.load(open("out/result.json", encoding="utf8")))'
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
           python - <<'EOF'
