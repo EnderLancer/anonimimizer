@@ -1,22 +1,34 @@
 # Ручна оцінка пайплайну з іншою NER-моделлю (Actions → NER model evaluation → Run workflow).
 #
-#   ner:      рядок моделі з параметрів ──► завантаження (HF_TOKEN для приватних) ──► run.py --mode model
-#             ──► ner_cache/<модель>.json (артефакт)
+#   setup:    сценарій + overrides ──► налаштування (.github/scripts/resolve_run.py), ключ кешу; якщо вихід цієї
+#             моделі на цих даних уже є в кеші, інференс пропускається
+#   ner:      shards паралельних jobs, кожна проганяє модель на своїй частині документів (HF_TOKEN для приватних)
+#   merge:    частини ──► ner_cache/<модель>.json (артефакт + кеш для наступних запусків)
 #   evaluate: для кожного режиму run.py --ner <модель> з готовим кешем ──► data/evaluate.py ──► summary
 #   summary:  зведена таблиця по режимах
 #
-# Інференс іде один раз у job ner на CPU, режими лише перевикористовують кеш.
-# Порожній параметр = значення адаптера за замовчуванням (див. ner_adapters.py). Параметри, яких обраний
-# тип моделі не має (напр. gliner_labels для hf), ігноруються з попередженням.
+# Сценарії (див. SCENARIOS у resolve_run.py):
+#   standard  model, model_regex, full на всьому тесті, 8 jobs інференсу
+#   quick     model і full на 20 документах, 2 jobs: чи модель узагалі працює
+#   compare   standard + regex як базова лінія без моделі
+#   fast      standard з int8-квантизацією (hf) і 16 jobs
+#   thorough  усі режими + cosine similarity
+# overrides перекриває сценарій: modes, shards (1–20), limit, data, cosine, cosine_model, fail_below, extra_pip,
+#   напр.: limit=50 shards=4 fail_below=85 extra_pip="sentencepiece protobuf"
+# ner_options — опції адаптера моделі (ner_adapters.py): revision, aggregation, min_score, labels, threshold, quantize…
 # Приватні моделі: секрет репозиторію HF_TOKEN (Settings → Secrets and variables → Actions) з токеном
-# спільного акаунта Hugging Face, достатньо прав read. Токен потрапляє лише в job ner.
+# спільного акаунта Hugging Face, достатньо прав read. Токен потрапляє лише в jobs ner.
 name: NER model evaluation
-run-name: "NER: ${{ inputs.model_type }}:${{ inputs.model }} (${{ inputs.modes }})"
+run-name: "NER: ${{ inputs.model_type }}:${{ inputs.model }} [${{ inputs.scenario }}]"
 
 on:
   workflow_dispatch:
     inputs:
-      # --- модель ---
+      scenario:
+        description: "Сценарій: standard | quick (20 док.) | compare (+regex) | fast (int8, 16 jobs) | thorough (+cosine)"
+        type: choice
+        options: [standard, quick, compare, fast, thorough]
+        default: standard
       model_type:
         description: "Тип моделі"
         type: choice
@@ -26,89 +38,43 @@ on:
         description: "Репозиторій HF (org/name) або spaCy-пакет / шлях"
         required: true
         default: "dslim/bert-base-NER"
-      revision:
-        description: "[hf, gliner] Гілка, тег або коміт моделі на HF"
-        default: ""
       ner_labels:
         description: "Мітки моделі → типи через пробіл: LOC=АДРЕСА ORG= (порожньо: PER/PERS/PERSON → ОСОБА)"
         default: ""
-      # --- опції адаптера ---
-      aggregation:
-        description: "[hf] Агрегація субтокенів"
-        type: choice
-        options: [simple, first, average, max, none]
-        default: simple
-      min_score:
-        description: "[hf] Мінімальна впевненість фрагмента, 0–1"
-        default: ""
-      gliner_labels:
-        description: "[gliner] Мітки через кому (person,address,phone number)"
-        default: ""
-      threshold:
-        description: "[gliner] Поріг впевненості, 0–1"
-        default: ""
-      max_chars:
-        description: "[hf, gliner] Довжина вікна в символах (довгі документи ріжуться на вікна)"
-        default: ""
-      overlap:
-        description: "[hf, gliner] Перекриття вікон у символах"
-        default: ""
-      batch_size:
-        description: "[hf, spacy] Розмір батча"
-        default: ""
-      join_spaces:
-        description: "[hf, gliner] Склеювати фрагменти однієї мітки через пробіл"
-        type: boolean
-        default: true
       ner_options:
-        description: "Додаткові опції адаптера як query: key=value&key=value"
+        description: "Опції моделі: revision=v2&aggregation=first&min_score=0.6 | labels=person,address&threshold=0.4"
         default: ""
-      # --- прогін і оцінка ---
-      modes:
-        description: "Режими через кому: model, model_regex, full, regex (базова лінія без моделі)"
-        default: "model,model_regex,full"
-      test_data:
-        description: "Файл з даними і правильною розміткою (шлях у репозиторії)"
-        default: "data/test/court_cases.jsonl"
-      limit:
-        description: "Лише перші N документів (порожньо — усі), для швидкої перевірки"
+      overrides:
+        description: "Перекрити сценарій: limit=50 shards=4 modes=model,full fail_below=85 data=… extra_pip=\"…\""
         default: ""
-      cosine:
-        description: "Рахувати cosine similarity (sentence-transformers, довше)"
-        type: boolean
-        default: false
-      cosine_model:
-        description: "Модель ембедингів для cosine similarity"
-        default: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-      fail_below:
-        description: "Падати, якщо бал (%) нижчий"
-        default: ""
-      extra_pip:
-        description: "Додаткові pip-пакети через пробіл (напр. wheel spaCy-моделі)"
-        default: ""
-      hf_cache:
-        description: "Кешувати ваги моделі між запусками (actions/cache)"
-        type: boolean
-        default: true
 
 permissions:
   contents: read
 
 env:
   NER_LABELS: ${{ inputs.ner_labels }}
-  TEST_DATA: ${{ inputs.test_data }}
-  LIMIT: ${{ inputs.limit }}
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  TOKENIZERS_PARALLELISM: "false"
 
 jobs:
-  ner:
-    name: NER inference
+  setup:
+    name: Setup
     runs-on: ubuntu-latest
-    timeout-minutes: 180
     outputs:
       ner: ${{ steps.spec.outputs.ner }}
       modes: ${{ steps.spec.outputs.modes }}
       needs_model: ${{ steps.spec.outputs.needs_model }}
+      shards: ${{ steps.spec.outputs.shards }}
+      n_shards: ${{ steps.spec.outputs.n_shards }}
+      limit: ${{ steps.spec.outputs.limit }}
+      data: ${{ steps.spec.outputs.data }}
+      cosine: ${{ steps.spec.outputs.cosine }}
+      cosine_model: ${{ steps.spec.outputs.cosine_model }}
+      fail_below: ${{ steps.spec.outputs.fail_below }}
+      extra_pip: ${{ steps.spec.outputs.extra_pip }}
+      weights_key: ${{ steps.spec.outputs.weights_key }}
+      cache_key: ${{ steps.key.outputs.cache_key }}
+      cached: ${{ steps.restore.outputs.cache-hit == 'true' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -116,103 +82,164 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Build model spec
+      - name: Resolve scenario
         id: spec
         env:
+          SCENARIO: ${{ inputs.scenario }}
           KIND: ${{ inputs.model_type }}
           MODEL: ${{ inputs.model }}
-          MODES: ${{ inputs.modes }}
-          OPT_revision: ${{ inputs.revision }}
-          OPT_aggregation: ${{ inputs.aggregation }}
-          OPT_min_score: ${{ inputs.min_score }}
-          OPT_labels: ${{ inputs.gliner_labels }}
-          OPT_threshold: ${{ inputs.threshold }}
-          OPT_max_chars: ${{ inputs.max_chars }}
-          OPT_overlap: ${{ inputs.overlap }}
-          OPT_batch_size: ${{ inputs.batch_size }}
-          OPT_join_spaces: ${{ inputs.join_spaces && '1' || '0' }}
           NER_OPTIONS: ${{ inputs.ner_options }}
-        run: |
-          python - <<'EOF'
-          import json, os, sys
-          from urllib.parse import parse_qsl
-          import ner_adapters as N
-
-          kind, model = os.environ["KIND"], os.environ["MODEL"].strip()
-          defaults = {"aggregation": "simple", "join_spaces": "1"}  # значення за замовчуванням у формі не вважаються вибором
-          opts = {k[4:].lower(): v.strip() for k, v in os.environ.items() if k.startswith("OPT_") and v.strip()}
-          opts.update(parse_qsl(os.environ.get("NER_OPTIONS", "")))
-          allowed = N.adapter_options(kind)
-          for k in sorted(set(opts) - set(allowed)):
-              if defaults.get(k) != opts[k]:
-                  print(f"::warning::опція {k}={opts[k]} не застосовується до {kind}", file=sys.stderr)
-          opts = {k: v for k, v in opts.items() if k in allowed and defaults.get(k) != v}
-          spec = N.make_spec(kind, model, **opts)
-
-          valid = ("model", "model_regex", "full", "regex")
-          modes = [m.strip() for m in os.environ["MODES"].split(",") if m.strip()]
-          bad = [m for m in modes if m not in valid]
-          if not modes or bad:
-              sys.exit(f"невідомі режими {bad}; доступні: {', '.join(valid)}")
-          needs_model = str(any(m != "regex" for m in modes)).lower()
-          out = f"ner={spec}\nmodes={json.dumps(modes)}\nneeds_model={needs_model}\n"
-          print(out, end="")
-          open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf8").write(out)
-          EOF
+          OVERRIDES: ${{ inputs.overrides }}
+        run: python .github/scripts/resolve_run.py
 
       - name: Prepare data
+        env:
+          TEST_DATA: ${{ steps.spec.outputs.data }}
+          LIMIT: ${{ steps.spec.outputs.limit }}
         run: bash .github/scripts/prepare_data.sh
 
-      - name: Install dependencies
-        if: steps.spec.outputs.needs_model == 'true'
+      # кеш виходу моделі між запусками: та сама модель з тими самими опціями, ті самі дані, той самий адаптер
+      - name: NER cache key
+        id: key
         env:
-          KIND: ${{ inputs.model_type }}
-          EXTRA_PIP: ${{ inputs.extra_pip }}
-        run: |
-          pip install python-crfsuite
-          case "$KIND" in
-            hf)     pip install torch --index-url https://download.pytorch.org/whl/cpu
-                    pip install "transformers[sentencepiece]" ;;
-            gliner) pip install torch --index-url https://download.pytorch.org/whl/cpu
-                    pip install gliner ;;
-            spacy)  pip install spacy ;;
-          esac
-          if [ -n "$EXTRA_PIP" ]; then pip install $EXTRA_PIP; fi
-
-      - name: Cache model weights
-        if: steps.spec.outputs.needs_model == 'true' && inputs.hf_cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/huggingface
-          key: hf-${{ inputs.model_type }}-${{ inputs.model }}-${{ inputs.revision }}
-
-      - name: Run NER (fills ner_cache/)
-        if: steps.spec.outputs.needs_model == 'true'
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
           NER: ${{ steps.spec.outputs.ner }}
         run: |
-          args=(); for l in $NER_LABELS; do args+=(--ner-label "$l"); done
-          python run.py out/data.jsonl out/submission.jsonl --mode model --ner "$NER" "${args[@]}"
+          h() { sha256sum | cut -c1-16; }
+          echo "cache_key=ner-v1-$(printf '%s' "$NER" | h)-$(cat out/data.jsonl ner_adapters.py | h)" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Restore NER cache
+        id: restore
+        if: steps.spec.outputs.needs_model == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: ner_cache/
+          key: ${{ steps.key.outputs.cache_key }}
+
+      - name: Reuse cached NER output
+        if: steps.restore.outputs.cache-hit == 'true'
+        run: echo "::notice::Вихід моделі взято з кешу попереднього запуску, інференс пропущено"
 
       - uses: actions/upload-artifact@v6
-        if: steps.spec.outputs.needs_model == 'true'
+        if: steps.restore.outputs.cache-hit == 'true'
         with:
           name: ner-cache
           path: ner_cache/
           if-no-files-found: error
 
+  ner:
+    name: NER inference (${{ matrix.shard }})
+    needs: setup
+    if: needs.setup.outputs.needs_model == 'true' && needs.setup.outputs.cached != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      matrix:
+        shard: ${{ fromJSON(needs.setup.outputs.shards) }}
+    env:
+      TEST_DATA: ${{ needs.setup.outputs.data }}
+      LIMIT: ${{ needs.setup.outputs.limit }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        env:
+          KIND: ${{ inputs.model_type }}
+          EXTRA_PIP: ${{ needs.setup.outputs.extra_pip }}
+        run: |
+          case "$KIND" in
+            hf)     uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
+                    uv pip install --system "transformers[sentencepiece]" ;;
+            gliner) uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
+                    uv pip install --system gliner ;;
+            spacy)  uv pip install --system spacy ;;
+          esac
+          if [ -n "$EXTRA_PIP" ]; then uv pip install --system $EXTRA_PIP; fi
+
+      - name: Cache model weights
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: ${{ needs.setup.outputs.weights_key }}
+
+      - name: Prepare data
+        run: bash .github/scripts/prepare_data.sh
+
+      - name: Run NER on shard
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          NER: ${{ needs.setup.outputs.ner }}
+          SHARD: ${{ matrix.shard }}
+          N_SHARDS: ${{ needs.setup.outputs.n_shards }}
+        run: python ner_adapters.py infer out/data.jsonl --ner "$NER" --shard "$SHARD/$N_SHARDS" --out "out/ner-part-$SHARD.json"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ner-part-${{ matrix.shard }}
+          path: out/ner-part-${{ matrix.shard }}.json
+          if-no-files-found: error
+
+  merge:
+    name: Merge NER shards
+    needs: [setup, ner]
+    runs-on: ubuntu-latest
+    env:
+      TEST_DATA: ${{ needs.setup.outputs.data }}
+      LIMIT: ${{ needs.setup.outputs.limit }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: ner-part-*
+          path: parts/
+          merge-multiple: true
+
+      - name: Prepare data
+        run: bash .github/scripts/prepare_data.sh
+
+      - name: Merge
+        env:
+          NER: ${{ needs.setup.outputs.ner }}
+        run: python ner_adapters.py merge out/data.jsonl --ner "$NER" parts/*.json
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ner-cache
+          path: ner_cache/
+          if-no-files-found: error
+
+      - uses: actions/cache/save@v4
+        with:
+          path: ner_cache/
+          key: ${{ needs.setup.outputs.cache_key }}
+
   evaluate:
     name: Evaluate (${{ matrix.mode }})
-    needs: ner
+    needs: [setup, merge]
+    # вихід моделі є з merge, з кешу попереднього запуску, або режими взагалі без моделі
+    if: >-
+      always() && needs.setup.result == 'success' &&
+      (needs.merge.result == 'success' || needs.setup.outputs.cached == 'true' || needs.setup.outputs.needs_model != 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        mode: ${{ fromJSON(needs.ner.outputs.modes) }}
+        mode: ${{ fromJSON(needs.setup.outputs.modes) }}
     env:
-      NER: ${{ needs.ner.outputs.ner }}
+      TEST_DATA: ${{ needs.setup.outputs.data }}
+      LIMIT: ${{ needs.setup.outputs.limit }}
+      NER: ${{ needs.setup.outputs.ner }}
       MODE: ${{ matrix.mode }}
     steps:
       - uses: actions/checkout@v5
@@ -221,14 +248,16 @@ jobs:
         with:
           python-version: "3.11"
 
+      - uses: astral-sh/setup-uv@v6
+
       - name: Install dependencies
         env:
-          COSINE: ${{ inputs.cosine }}
+          COSINE: ${{ needs.setup.outputs.cosine }}
         run: |
-          pip install python-crfsuite
+          uv pip install --system python-crfsuite
           if [ "$COSINE" = "true" ]; then
-            pip install torch --index-url https://download.pytorch.org/whl/cpu
-            pip install sentence-transformers
+            uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
+            uv pip install --system sentence-transformers
           fi
 
       - uses: actions/download-artifact@v7
@@ -247,9 +276,9 @@ jobs:
 
       - name: Result %
         env:
-          COSINE: ${{ inputs.cosine }}
-          COSINE_MODEL: ${{ inputs.cosine_model }}
-          FAIL_BELOW: ${{ inputs.fail_below }}
+          COSINE: ${{ needs.setup.outputs.cosine }}
+          COSINE_MODEL: ${{ needs.setup.outputs.cosine_model }}
+          FAIL_BELOW: ${{ needs.setup.outputs.fail_below }}
         run: |
           cos=(); [ "$COSINE" = "true" ] && cos=(--cosine --cosine-model "$COSINE_MODEL")
           python data/evaluate.py out/data.jsonl out/submission.jsonl --json "${cos[@]}" > out/result.json
@@ -279,8 +308,8 @@ jobs:
 
   summary:
     name: Summary
-    needs: [ner, evaluate]
-    if: always() && needs.ner.result == 'success'
+    needs: [setup, evaluate]
+    if: always() && needs.setup.result == 'success' && needs.evaluate.result != 'skipped'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v7
@@ -290,7 +319,7 @@ jobs:
 
       - name: Table
         env:
-          NER: ${{ needs.ner.outputs.ner }}
+          NER: ${{ needs.setup.outputs.ner }}
         run: |
           python - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
           import glob, json, os

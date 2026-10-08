@@ -53,27 +53,34 @@ python run.py cases.jsonl out.jsonl --ner spacy:path/to/model   # за замо�
 - Кеш окремий для кожної моделі: `ner_cache/<модель>.json` (для моделі за замовчуванням — `ner_cache.json`). У кеші лежать сирі мітки, тож `--ner-label` можна змінювати без повторного інференсу.
 - Новий формат: клас з методом `predict_one(text) -> list[EntitySpan]` (зручно через `normalize()`), зареєстрований декоратором `@register("тип")`.
 - Ще опція `revision` (гілка, тег або коміт моделі на HF) для `hf` і `gliner`.
+- `hf` з fast-токенізатором ріже документ на вікна по токенах (до ліміту моделі, перекриття `stride`, за замовчуванням 64 токени). Для моделей з англомовним словником кирилиця йде майже по токену на символ, тож вікна по символах були б або задовгими, або напівпорожніми. `quantize=1` вмикає динамічну int8-квантизацію: на CPU швидше в ~1,5–2 рази, точність може трохи змінитися.
 - **Приватні моделі:** токен Hugging Face береться зі змінної середовища `HF_TOKEN`. У рядок моделі його не пишемо: рядок потрапляє в логи й у назву кешу.
 
 #### Запуск у GitHub Actions
 
-Actions → **NER model evaluation** → Run workflow (`.github/workflows/ner-models.yml`, лише ручний запуск). Job `ner` один раз проганяє модель на CPU і зберігає `ner_cache/` як артефакт. Далі кожен обраний режим оцінюється окремо, а job `summary` збирає таблицю балів за режимами.
+Actions → **NER model evaluation** → Run workflow (`.github/workflows/ner-models.yml`, лише ручний запуск). Інференс іде на CPU і ділиться на `shards` паралельних jobs (за замовчуванням 8, частини збалансовані за довжиною тексту). Job `merge` зливає частини в `ner_cache/` і кешує результат між запусками: та сама модель з тими самими опціями на тих самих даних більше не проганяється, тож зміна `ner_labels` чи `modes` займає хвилини. Далі кожен режим оцінюється окремо, а job `summary` збирає таблицю балів за режимами.
+
+Локально те саме: `python ner_adapters.py infer data.jsonl --ner SPEC --shard 0/4 --out part0.json`, потім `python ner_adapters.py merge data.jsonl --ner SPEC part*.json`.
+
+Параметри запуску:
 
 | Параметр | Що задає |
 |---|---|
-| `model_type`, `model`, `revision` | тип адаптера (`hf` / `gliner` / `spacy`), репозиторій або пакет, версія моделі |
+| `scenario` | готовий набір налаштувань, див. нижче |
+| `model_type`, `model` | тип адаптера (`hf` / `gliner` / `spacy`) і репозиторій або пакет |
 | `ner_labels` | `МІТКА=ТИП` через пробіл, як `--ner-label` |
-| `aggregation`, `min_score` | опції `hf` |
-| `gliner_labels`, `threshold` | опції `gliner` |
-| `max_chars`, `overlap`, `batch_size`, `join_spaces` | вікна для довгих документів, батч, склеювання через пробіл |
-| `ner_options` | будь-які інші опції адаптера: `key=value&key=value` |
-| `modes` | `model`, `model_regex`, `full`, `regex` (базова лінія без моделі) |
-| `test_data`, `limit` | файл з даними й розміткою, перші N документів для швидкої перевірки |
-| `cosine`, `cosine_model` | cosine similarity в `evaluate.py` |
-| `fail_below` | падати, якщо бал (%) нижчий |
-| `extra_pip`, `hf_cache` | додаткові пакети (напр. wheel spaCy-моделі), кешування ваг між запусками |
+| `ner_options` | опції адаптера: `revision=v2&aggregation=first&min_score=0.6`, для GLiNER `labels=person,address&threshold=0.4` |
+| `overrides` | перекрити сценарій: `limit=50 shards=4 modes=model,full fail_below=85 data=… cosine=1 cosine_model=… extra_pip="…"` |
 
-Порожній параметр означає значення адаптера за замовчуванням. Параметр, якого обраний тип не має, ігнорується з попередженням.
+| Сценарій | Режими | Jobs інференсу | Інше |
+|---|---|---|---|
+| `standard` | model, model_regex, full | 8 | весь тест |
+| `quick` | model, full | 2 | 20 документів: чи модель узагалі працює |
+| `compare` | regex, model, model_regex, full | 8 | `regex` як базова лінія без моделі |
+| `fast` | model, model_regex, full | 16 | int8-квантизація (`quantize=1`, лише `hf`) |
+| `thorough` | regex, model, model_regex, full | 8 | + cosine similarity |
+
+Сценарії описані в `.github/scripts/resolve_run.py` (`SCENARIOS`). Порожня опція моделі означає значення адаптера за замовчуванням. Невідома для типу моделі опція в `ner_options` дає помилку ще до запуску інференсу.
 
 Для приватних моделей додайте секрет репозиторію `HF_TOKEN` (Settings → Secrets and variables → Actions) з read-токеном спільного акаунта Hugging Face. Токен передається лише в job `ner`.
 
@@ -141,7 +148,7 @@ Actions → **NER model evaluation** → Run workflow (`.github/workflows/ner-mo
 |---|---|
 | `run.py` | запуск трьох режимів |
 | `ner_adapters.py` | адаптери NER-моделей (spaCy, Hugging Face, GLiNER) до спільного формату `EntitySpan`, кеш |
-| `.github/workflows/ner-models.yml` | ручна оцінка з довільною NER-моделлю |
+| `.github/workflows/ner-models.yml`, `.github/scripts/` | ручна оцінка з довільною NER-моделлю, сценарії запуску |
 | `predict_trf.py` | усі правила (АДРЕСА, НОМЕР, ІНФОРМАЦІЯ), злиття, нумерація псевдонімів |
 | `regex_persons.py` | regex для ОСОБА |
 | `predict.py`, `common.py` | CRF-ознаки, інференс CRF, кластеризація осіб |
