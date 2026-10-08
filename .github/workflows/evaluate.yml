@@ -4,6 +4,7 @@
 #   Expected result ───────────────────────────┘
 #
 #   run.py   NER (з ner_cache.json) + regex-особи + правила (+ CRF у режимі full), злиття і псевдоніми.
+#            Режим model: лише NER-модель (ОСОБА), без regex-осіб, правил і CRF.
 #            Читає з тестового файлу лише id та original, анотацій не бачить.
 #
 # ner_cache.json уже містить вихід spaCy-моделі для всього тесту, тож модель у CI не завантажується
@@ -41,7 +42,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [regex, model_regex, full]
+        mode: [model, regex, model_regex, full]
     steps:
       - uses: actions/checkout@v5
 
