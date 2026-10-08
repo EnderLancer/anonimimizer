@@ -39,7 +39,7 @@ on:
         required: true
         default: "dslim/bert-base-NER"
       ner_labels:
-        description: "Мітки моделі → типи через пробіл: LOC=АДРЕСА ORG= (порожньо: PER/PERS/PERSON → ОСОБА)"
+        description: "Мітки моделі → типи через пробіл: @pii (набір PII-міток) LOC=АДРЕСА ORG= (порожньо — лише імена → ОСОБА)"
         default: ""
       ner_options:
         description: "Опції моделі: revision=v2&aggregation=first&min_score=0.6 | labels=person,address&threshold=0.4"

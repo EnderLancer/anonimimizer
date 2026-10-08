@@ -36,6 +36,20 @@ DEFAULT_LABEL_MAP = {
     **dict.fromkeys(("GIVEN_NAME", "GIVENNAME", "FIRST_NAME", "FIRSTNAME", "MIDDLE_NAME", "MIDDLENAME", "SURNAME",
                      "LAST_NAME", "LASTNAME", "FAMILY_NAME", "NAME", "FULL_NAME", "FULLNAME", "NAME_STUDENT"), "ОСОБА"),
 }
+# Набори міток, які вмикаються одним --ner-label @назва. "pii": інші типи PII-моделей (Wismut/nym-pii-multilingual,
+# piiranha тощо). Тип із * — слабка частина (див. ner_postprocess): місто чи область лише в складі адреси.
+LABEL_PRESETS = {
+    "pii": {
+        **dict.fromkeys(("STREET_ADDRESS", "STREET_NAME", "STREET", "ADDRESS"), "АДРЕСА"),
+        **dict.fromkeys(("BUILDING_NUMBER", "BUILDINGNUM", "SECONDARY_ADDRESS", "CITY", "STATE", "ZIP_CODE", "ZIPCODE",
+                         "COUNTRY"), "АДРЕСА*"),
+        **dict.fromkeys(("PASSPORT", "DRIVERS_LICENSE", "DRIVERLICENSENUM", "TAX_ID", "TAXNUM", "SSN", "SOCIALNUM",
+                         "GOVERNMENT_ID", "IDCARDNUM", "IBAN", "CREDIT_DEBIT_CARD", "CREDITCARDNUMBER", "ACCOUNT_NUMBER",
+                         "ACCOUNTNUM", "ROUTING_NUMBER", "SWIFT_BIC", "PHONE", "TELEPHONENUM", "FAX_NUMBER",
+                         "LICENSE_PLATE", "CUSTOMER_ID", "EMPLOYEE_ID", "MEDICAL_RECORD_NUMBER"), "НОМЕР"),
+        **dict.fromkeys(("DATE_OF_BIRTH", "DATEOFBIRTH", "EMAIL", "URL", "USERNAME"), "ІНФОРМАЦІЯ"),
+    },
+}
 BIO = re.compile(r"^[BIESLU]-", re.I)
 
 
@@ -86,42 +100,18 @@ def normalize(text: str, raw, expand_words: bool = True, min_score: float = 0.0,
     merged: list[list] = []
     for it in items:
         last = merged[-1] if merged else None
-        if last and last[2] == it[2] and (it[0] <= last[1] or join_spaces and re.fullmatch(r"[ 	 ]+", text[last[1]:it[0]])):
+        if last and last[2] == it[2] and (it[0] <= last[1] or join_spaces and re.fullmatch(r"[ \t\xa0]+", text[last[1]:it[0]])):
             last[1], last[3] = max(last[1], it[1]), max(last[3], it[3])
         else:
             merged.append(it)
     return [EntitySpan(s, e, text[s:e], label, score) for s, e, label, score in merged]
 
 
-def map_labels(spans: list[EntitySpan], label_map: dict[str, str | None] | None = None,
-               text: str | None = None) -> list[EntitySpan]:
-    """Сирі мітки -> типи челенджу. Мітка без відповідності (або з порожнім значенням) відкидається.
-
-    Фрагменти одного типу, що перетинаються або стикуються, об'єднуються: PII-моделі ділять ім'я на кілька
-    міток (GIVEN_NAME «Олена» + SURNAME «Соловей», часто з перекриттям), а для челенджу це одна ОСОБА.
-    З text об'єднуються й фрагменти, між якими лише пробіли в межах рядка."""
+def map_labels(spans: list[EntitySpan], label_map: dict[str, str | None] | None = None) -> list[EntitySpan]:
+    """Сирі мітки -> типи челенджу (з * — «слабка» частина, див. ner_postprocess.assemble). Мітка без
+    відповідності (або з порожнім значенням) відкидається. Лише заміна мітки: обробку даних робить ner_postprocess."""
     label_map = DEFAULT_LABEL_MAP if label_map is None else label_map
-    items = sorted(([sp.start, sp.end, t, sp.score] for sp in spans if (t := label_map.get(sp.label.upper()))),
-                   key=lambda x: (x[0], x[1]))
-    merged: list[list] = []
-    for it in items:
-        last = next((m for m in reversed(merged) if m[2] == it[2]), None)
-        gap = text[last[1]:it[0]] if last and text is not None and it[0] > last[1] else None
-        if last and (it[0] <= last[1] or gap is not None and re.fullmatch(r"[ 	 ]+", gap))                 and not any(m[2] != it[2] and m[0] >= last[1] and m[1] <= it[0] for m in merged):
-            last[1], last[3] = max(last[1], it[1]), max(last[3], it[3])
-        else:
-            merged.append(it)
-    merged.sort(key=lambda x: (x[0], x[1]))
-    return [EntitySpan(s, e, text[s:e] if text is not None else _span_text(spans, s, e), t, sc) for s, e, t, sc in merged]
-
-
-def _span_text(spans: list[EntitySpan], s: int, e: int) -> str:
-    """Текст [s, e) з фрагментів, що його покривають (без тексту документа; об'єднані фрагменти суміжні)."""
-    chars: dict[int, str] = {}
-    for sp in spans:
-        for k in range(max(s, sp.start), min(e, sp.end)):
-            chars.setdefault(k, sp.text[k - sp.start])
-    return "".join(chars.get(k, " ") for k in range(s, e))
+    return [replace(sp, label=t) for sp in spans if (t := label_map.get(sp.label.upper()))]
 
 
 def windows(text: str, max_chars: int, overlap: int):
