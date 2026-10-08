@@ -24,6 +24,23 @@ from pseudo.predict import best_device, predict_doc, spans_to_submission, write_
 log = logging.getLogger("pseudo")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
 
+for _noisy in ("httpx", "httpcore", "huggingface_hub", "huggingface_hub.utils._http", "urllib3", "filelock", "fsspec",
+               "transformers.modeling_utils", "datasets"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+    logging.getLogger(_noisy).propagate = False
+
+
+class _DropHttpNoise(logging.Filter):
+    """Belt and braces: whatever logger emits them, HTTP request lines never reach the console / train.log."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not (msg.startswith("HTTP Request:") or "unauthenticated requests to the HF Hub" in msg)
+
+
+for _h in logging.getLogger().handlers:
+    _h.addFilter(_DropHttpNoise())
+
 
 def file_sha1(path: Path, n: int = 12) -> str:
     h = hashlib.sha1()
@@ -52,6 +69,7 @@ def attach_file_log(out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     fh = logging.FileHandler(out_dir / "train.log", encoding="utf-8")
     fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S"))
+    fh.addFilter(_DropHttpNoise())
     logging.getLogger().addHandler(fh)
     logging.getLogger("transformers").addHandler(fh)
 
@@ -115,6 +133,9 @@ def run(model_name: str, out_dir: Path, n_docs: int | None, dev_docs: int | None
     device = best_device()
     out_dir.mkdir(parents=True, exist_ok=True)
     attach_file_log(out_dir)
+    for name in ("train.parquet", "dev.parquet", "dev.jsonl"):
+        if not (SILVER / name).exists():
+            raise SystemExit(f"data file missing: {SILVER / name} - copy it from Drive (cell 2) before training")
     dv = data_version()
     params = {"model": model_name, "n_docs": n_docs, "epochs": epochs, "lr": lr, "batch": batch, "grad_accum": grad_accum,
               "seed": seed, "oversample_number": oversample_number, "window": window, "stride": stride, "use_masks": use_masks,
@@ -146,19 +167,25 @@ def run(model_name: str, out_dir: Path, n_docs: int | None, dev_docs: int | None
     log.info("%s: %d train docs -> %d windows (%.0fs), %d dev docs, device %s", model_name, len(train_rows), len(feats),
              time.time() - t0, len(dev_rows), device)
     ds = Dataset.from_list(feats)
+    # weights always in fp32; mixed precision is the Trainer's job (mDeBERTa ships fp16 weights -> "Attempting to unscale FP16 gradients")
     model = AutoModelForTokenClassification.from_pretrained(model_name, num_labels=len(LABELS), id2label=dict(enumerate(LABELS)),
-                                                            label2id=L2I)
+                                                            label2id=L2I, dtype=torch.float32,
+                                                            ignore_mismatched_sizes=True)  # reuse encoders that already carry another NER/PII head
     # predict.py reads the window settings back from the saved config
     model.config.pseudo_window, model.config.pseudo_stride = window, stride
     if grad_checkpointing:
         model.gradient_checkpointing_enable()
     steps_per_epoch = max(1, len(ds) // (batch * grad_accum))
     warmup = int(0.06 * steps_per_epoch * epochs)
+    use_bf16 = fp16 and device == "cuda" and torch.cuda.is_bf16_supported()
+    log.info("mixed precision: %s", "bf16" if use_bf16 else "fp16" if fp16 and device == "cuda" else "none")
     args = TrainingArguments(
         output_dir=str(out_dir / "checkpoints"), per_device_train_batch_size=batch, gradient_accumulation_steps=grad_accum,
         num_train_epochs=epochs, learning_rate=lr, warmup_steps=warmup, weight_decay=0.01, lr_scheduler_type="linear",
-        logging_steps=50, save_strategy="no", report_to=[], seed=seed, fp16=fp16 and device == "cuda",
-        dataloader_num_workers=0,
+        logging_steps=200, save_strategy="no", report_to=[], seed=seed,
+        # A100 / L4 support bf16: no loss scaling, stable for mDeBERTa; T4 falls back to fp16
+        bf16=use_bf16, fp16=fp16 and device == "cuda" and not use_bf16,
+        dataloader_num_workers=0, disable_tqdm=False,
     )
     cb = DevEval(tok, dev_rows, device, out_dir)
     log.info("window %d stride %d, masks %s, grad checkpointing %s", window, stride, use_masks, grad_checkpointing)
