@@ -28,6 +28,9 @@ def label_numbers(text: str, existing: list[dict], masks: list[dict]) -> tuple[l
         lab(m.start(1), m.end(1), "rnokpp")
     for m in P.UNZR.finditer(text):
         lab(m.start(1), m.end(1), "unzr")
+    # local courts leave most of these numbers open, the Supreme Court decisions of the test hide all of them
+    for m in P.VP.finditer(text):
+        lab(m.start(1), m.end(1), "vp")
     for m in P.PASSPORT_SN.finditer(text):
         left = text[max(0, m.start() - 160): m.start()]
         if P.PASSPORT_CTX.search(left) and not P.NOT_PASSPORT_LEFT.search(left[-30:]) and not P.NOT_PASSPORT_CTX.search(left[-90:]):

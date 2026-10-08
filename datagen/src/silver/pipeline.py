@@ -9,7 +9,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 
 def run(a) -> None:
-    steps = [a.step] if a.step != "all" else ["filter", "fill", "label"] + ([] if a.skip_ner else ["ner"]) + ["audit", "samples", "split", "export"]
+    steps = [a.step] if a.step != "all" else ["filter", "fill", "label"] + ([] if a.skip_ner else ["ner"]) + ["excerpt", "audit", "samples", "split", "export", "report"]
     for step in steps:
         t0 = time.time()
         log.info("== %s ==", step)
@@ -25,6 +25,9 @@ def run(a) -> None:
         elif step == "ner":
             from silver.ner import run_ner
             run_ner(batch=a.batch, limit=a.limit)
+        elif step == "excerpt":
+            from silver.excerpt import run_excerpt
+            run_excerpt()
         elif step == "audit":
             from silver.audit import run_audit
             run_audit(seed=a.seed)

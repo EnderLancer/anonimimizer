@@ -9,12 +9,12 @@ import time
 from pathlib import Path
 
 from silver import patterns as P
-from silver.io import SILVER, RESOURCES, read_jsonl, step_path, write_jsonl
+from silver.io import DATA, RESOURCES, read_jsonl, step_path, write_jsonl
 from silver.merge import any_overlap, merge
 from silver.persons import _ok
 
 log = logging.getLogger("silver")
-CACHE = SILVER / "ner_cache"
+CACHE = DATA / "silver" / "ner_cache"  # shared by the dataset variants: the first fill of a document is the same text
 MODEL_GLOB = str(RESOURCES / "models" / "uk_ner_web_trf_13class" / "uk_ner_web_trf_13class-*")
 
 

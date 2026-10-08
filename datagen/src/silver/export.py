@@ -8,6 +8,7 @@ from collections import defaultdict
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from silver.exclude import ExcludedPool
 from silver.io import SILVER, read_jsonl, step_path, write_jsonl
 from silver.split import OPEN_NAME_SOURCES
 
@@ -70,6 +71,8 @@ def assign_pseudonyms(doc: dict) -> list[dict]:
 SCHEMA = pa.schema([
     ("id", pa.string()),
     ("src_id", pa.string()),
+    ("corpus", pa.string()),
+    ("kind", pa.string()),
     ("text", pa.string()),
     ("text_pseudonymized", pa.string()),
     ("text_source", pa.string()),
@@ -97,8 +100,10 @@ def _rows(docs):
         labels = assign_pseudonyms(d)
         annotations = [{k: l[k] for k in ("start", "end", "type", "pseudonym", "source")} for l in labels]
         yield {
-            "id": f"{d['id']}-v1",
+            "id": f"{d['id']}-v{d.get('fill', 1)}",
             "src_id": d["id"],
+            "corpus": d.get("corpus"),
+            "kind": d.get("kind"),
             "text": d["text"],
             # fully pseudonymized: placeholders AND the names/numbers ЄДРСР left open
             "text_pseudonymized": render_pseudonymized(d["text"], annotations),
@@ -122,8 +127,13 @@ def _test_schema(rows):
 
 
 def run_export() -> None:
+    pool = ExcludedPool()
     for name in ("train", "dev", "dev_judges"):
-        rows = list(_rows(read_jsonl(step_path(f"split_{name}"))))
+        docs = list(read_jsonl(step_path(f"split_{name}")))
+        leaked = [d["id"] for d in docs if d["id"] in pool.ids or d.get("case") in pool.cases]
+        if leaked:
+            raise RuntimeError(f"{name}: {len(leaked)} documents of the test pool or its cases, e.g. {leaked[:5]}")
+        rows = list(_rows(docs))
         table = pa.Table.from_pylist(rows, schema=SCHEMA)
         pq.write_table(table, SILVER / f"{name}.parquet", compression="zstd")
         if name != "train":

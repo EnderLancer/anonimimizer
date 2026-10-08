@@ -7,7 +7,7 @@ import random
 import re
 from collections import Counter, defaultdict
 
-from silver.io import SILVER, read_jsonl, step_path
+from silver.io import SILVER, labeled_step, read_jsonl, step_path
 from silver.ner import _cache_path
 
 log = logging.getLogger("silver")
@@ -97,14 +97,14 @@ def run_audit(seed: int = 42, src: str = "02_labeled", n: int = 1000) -> None:
     log.info("audit on %d docs: %s", len(sample), json.dumps({k: v for k, v in metrics.items() if k != "counts_by_source"}, ensure_ascii=False))
 
 
-SAMPLE_LAYERS = ["role_regex", "header", "ini_any", "full_pib", "signature", "ner", "rnokpp", "passport", "iban", "card",
+SAMPLE_LAYERS = ["role_regex", "header", "ini_any", "full_pib", "signature", "ner", "rnokpp", "passport", "vp", "iban", "card",
                  "email", "dob", "address", "placeholder_person"]
 
 
 def run_samples(seed: int = 42, src: str | None = None, per_layer: int = 50) -> None:
     AUDIT.mkdir(parents=True, exist_ok=True)
     rng = random.Random(seed)
-    src = src or ("03_ner" if step_path("03_ner").exists() else "02_labeled")
+    src = src or labeled_step()
     pools: dict[str, list] = defaultdict(list)
     for d in read_jsonl(step_path(src)):
         for l in d["labels"]:

@@ -26,7 +26,7 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--oversample-number", type=float, default=1.0, help="add this share of НОМЕР docs again (1.0 = x2)")
     ap.add_argument("--no-fp16", action="store_true")
-    ap.add_argument("--push-to", default=None, help="HF Hub repo id to push the model to")
+    ap.add_argument("--push-to", default=None, help="HF Hub repo id (user/name); the repo is created private; needs HF_TOKEN / hf login")
     ap.add_argument("--max-windows", type=int, default=None, help="debug: cap training windows")
     ap.add_argument("--window", type=int, default=512, help="tokens per window (e.g. 4096 for long-context models)")
     ap.add_argument("--stride", type=int, default=128, help="overlap between consecutive windows in tokens")

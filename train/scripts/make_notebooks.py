@@ -64,12 +64,16 @@ for need in ('train.parquet', 'dev.parquet', 'dev.jsonl'):
 assert os.path.exists('/content/ai-camp/data/evaluate.py'), 'data/evaluate.py missing in the repo'
 print('OK, data from', src)""")
 
-CELL_HF = code("""#@title 3. (optional) Hugging Face login - needed only for --push-to
-PUSH_TO = ""  #@param {type:"string"}
-if PUSH_TO:
+CELL_HF = code("""#@title 3. Hugging Face - every trained model is pushed to a PRIVATE repo <HF_USER>/pseudo-<run>
+HF_USER = ""  #@param {type:"string"}  # your HF username or org; empty = do not push
+if HF_USER:
+    import os
     from google.colab import userdata
     from huggingface_hub import login
-    login(userdata.get('HF_TOKEN'))  # add HF_TOKEN in Colab: left sidebar -> Secrets""")
+    os.environ['HF_TOKEN'] = userdata.get('HF_TOKEN')  # Colab: left sidebar -> Secrets -> HF_TOKEN (write access), enable notebook access
+    login(os.environ['HF_TOKEN'])
+else:
+    print('HF_USER is empty: models are NOT pushed to the Hub')""")
 
 SETUP = [CELL_CODE, CELL_DATA, CELL_HF]
 
@@ -92,7 +96,7 @@ BATCH = 64  #@param {type:"integer"}  # A100 40GB: base 64, large 32; T4 16GB: b
 GRAD_ACCUM = 1  #@param {type:"integer"}
 N_DOCS = 0  #@param {type:"integer"}
 DEV_DOCS = 500  #@param {type:"integer"}
-extra = (f' --n-docs {N_DOCS}' if N_DOCS else '') + (f' --push-to {PUSH_TO}' if PUSH_TO else '')
+extra = (f' --n-docs {N_DOCS}' if N_DOCS else '') + (f' --push-to {HF_USER}/pseudo-{RUN}' if HF_USER else '')
 # --skip-if-done: if the same model + hyper-parameters + data version is already on Drive, nothing is retrained
 !python scripts/train.py --model $MODEL --out runs/$RUN --epochs $EPOCHS --lr $LR --batch $BATCH --grad-accum $GRAD_ACCUM --dev-docs $DEV_DOCS --skip-if-done $DRIVE/runs/$RUN $extra
 !rm -rf runs/$RUN/checkpoints && mkdir -p $DRIVE/runs/$RUN && cp -r runs/$RUN/. $DRIVE/runs/$RUN/ && echo saved to $DRIVE/runs/$RUN - model, config.json with data version and fingerprint, train.log"""))
@@ -146,6 +150,7 @@ for i, (run, {unpack}) in enumerate(items, 1):
 {extra_line}    pct = int(100 * (i - 1) / n)
     print(f'\\n[{{i}}/{{n}}  {{pct}}%] ===== {{run}}: {{model}} {{extra}} =====', flush=True)
     nd = f' --n-docs {{N_DOCS}}' if N_DOCS else ''
+    nd += f' --push-to {{HF_USER}}/pseudo-{{run}}' if HF_USER else ''
     t0 = time.time()
     # --skip-if-done: train.py compares the fingerprint with the run on Drive and exits immediately if identical
     rc = os.system(f'python scripts/train.py --model {{model}} --out runs/{{run}} --epochs {{epochs}} --lr {{lr}} --batch {{batch}} '

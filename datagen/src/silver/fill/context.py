@@ -87,22 +87,28 @@ _NUM_RULES = [
     ("rnokpp", re.compile(r"(рнокпп|іпн|ідентифікац|податков|обліков\w* картк|реєстраційн\w* номер\w* обл)", re.I)),
     ("iban", re.compile(r"(рахун|iban|р/р|картк\w* рахун|на карт)", re.I)),
     ("phone", re.compile(r"(тел\.|телефон|моб\.|мобільн|номер\w* тел|контактн)", re.I)),
-    ("passport", re.compile(r"(паспорт|сері[яї]|посвідч|id-?карт|ід-?карт)", re.I)),
-    ("svidotstvo", re.compile(r"(свідоцтв|диплом|трудов\w* книжк|атестат|посвідчення водія|водійськ)", re.I)),
+    ("imei", re.compile(r"(imei|імеі)", re.I)),
+    ("passport", re.compile(r"(паспорт|посвідч|id-?карт|ід-?карт)", re.I)),
+    # «серії» right before the placeholder asks for letters + digits, whatever the document is
+    ("svidotstvo", re.compile(r"(свідоцтв|диплом|трудов\w* книжк|атестат|посвідчення водія|водійськ|сері[яїю])", re.I)),
     ("military", re.compile(r"(частин|в/ч|в\.ч\.)", re.I)),
+    ("vin", re.compile(r"(vin|він-?код|кузов|шасі|\bрам[иі]\b)", re.I)),
     ("vehicle", re.compile(r"(д\.?\s?н\.?\s?з|номерн\w* знак|реєстрац\w* номер|державн\w* номер|автомоб|транспортн|"
-                            r"мотоцикл|причіп|vin|кузов|шасі|заводськ)", re.I)),
+                            r"мотоцикл|причіп|заводськ)", re.I)),
     ("provadzhennia", re.compile(r"(провадж)", re.I)),
     ("card", re.compile(r"(банківськ\w* карт|картк[аи] №|платіжн\w* карт)", re.I)),
 ]
 
 
 def number_subtype(left: str, right: str) -> str:
+    """The cue closest to the placeholder decides: «номер кузова …, реєстраційний номер НОМЕР_2» is a plate, not a VIN."""
     ctx = left[-LEFT:]
+    best, pos = "generic", -1
     for name, rx in _NUM_RULES:
-        if rx.search(ctx):
-            return name
-    return "generic"
+        for m in rx.finditer(ctx):
+            if m.start() > pos:
+                best, pos = name, m.start()
+    return best
 
 
 # --- sub-type of ІНФОРМАЦІЯ ------------------------------------------------------------------
@@ -119,10 +125,19 @@ _INFO_RULES = [
 ]
 _DOB_RIGHT_ROKU = re.compile(r"^\s*(року|р\.)\s*(народження|нар\.|н\.)?", re.I)
 _DOB_RIGHT_RN = re.compile(r"^\s*р\.\s?н\.", re.I)
+_CHILD = re.compile(r"(малолітн|неповнолітн|дитин|дитя|\bдітей\b|\bсин[ау]?\b|доньк|дочк)", re.I)
 
 
 def info_subtype(left: str, right: str) -> tuple[str, dict]:
-    """Return (subtype, hints). hints: {'no_roku': True} when the text already says «року народження»."""
+    """Return (subtype, hints). hints: {'no_roku': True} when the text already says «року народження»,
+    {'child': True} when a birth date belongs to a minor."""
+    st, hints = _info_subtype(left, right)
+    if st == "dob" and _CHILD.search(left[-LEFT:]):
+        hints = {**hints, "child": True}
+    return st, hints
+
+
+def _info_subtype(left: str, right: str) -> tuple[str, dict]:
     ctx = left[-LEFT:]
     hints: dict = {}
     r = right[:25]

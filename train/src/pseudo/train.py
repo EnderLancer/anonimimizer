@@ -65,6 +65,18 @@ def fingerprint(params: dict) -> str:
     return hashlib.sha1(json.dumps(params, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:12]
 
 
+def push_private(model_dir: Path, repo: str, message: str) -> None:
+    """Upload the saved model to a private Hub repo; a failed push must not abort the run (Drive copy follows)."""
+    try:
+        from huggingface_hub import HfApi
+        api = HfApi()
+        api.create_repo(repo, private=True, exist_ok=True)
+        api.upload_folder(folder_path=str(model_dir), repo_id=repo, commit_message=message)
+        log.info("pushed to private repo %s", repo)
+    except Exception as e:
+        log.error("push to %s failed: %s", repo, e)
+
+
 def attach_file_log(out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     fh = logging.FileHandler(out_dir / "train.log", encoding="utf-8")
@@ -148,6 +160,8 @@ def run(model_name: str, out_dir: Path, n_docs: int | None, dev_docs: int | None
                      out_dir.name, fp, skip_if_done)
             if skip_if_done.resolve() != out_dir.resolve():
                 shutil.copytree(skip_if_done, out_dir, dirs_exist_ok=True)
+            if push_to:
+                push_private(out_dir / "model", push_to, f"{model_name} fingerprint {fp}")
             return
     (out_dir / "config.json").write_text(json.dumps({**params, "fingerprint": fp, "status": "running",
                                                      "started": time.strftime("%Y-%m-%d %H:%M:%S")}, ensure_ascii=False, indent=1),
@@ -205,6 +219,4 @@ def run(model_name: str, out_dir: Path, n_docs: int | None, dev_docs: int | None
         "best_epoch": best and best["epoch"], "best_dev_f1": best and best["final_score"],
     }, ensure_ascii=False, indent=1), encoding="utf-8")
     if push_to:
-        model.push_to_hub(push_to, commit_message=f"{model_name} docs={len(train_rows)} ep={epochs} lr={lr}")
-        tok.push_to_hub(push_to)
-        log.info("pushed to %s", push_to)
+        push_private(out_dir / "model", push_to, f"{model_name} docs={len(train_rows)} ep={epochs} lr={lr}")

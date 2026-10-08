@@ -41,6 +41,12 @@ def test_rnokpp_and_edrpou():
     assert sorted(s for s, t, src in _spans(d) if src == "rnokpp") == ["2970309241", "3127985494"]
 
 
+def test_enforcement_proceeding_numbers():
+    d = label_doc(_doc("у ВП № 61234567 та у виконавчому провадженні №65432109; справа № 2-2722/08, наказ № 1234567890123"))
+    assert [s for s, t, src in _spans(d) if src == "vp"] == ["61234567", "65432109"]
+    assert all(t == "НОМЕР" for _, t, src in _spans(d) if src == "vp")
+
+
 def test_passport_needs_context():
     d = label_doc(_doc("паспорт громадянина України серії КВ 123456, виданий ... спецупакування № АБ030649"))
     assert [s for s, t, src in _spans(d) if src == "passport"] == ["КВ 123456"]

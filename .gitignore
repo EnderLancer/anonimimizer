@@ -11,6 +11,7 @@ venv/
 # data artifacts
 data/train/
 data/silver/
+data/silver_*/
 data/resources/
 !data/silver/REPORT.md
 !data/silver/audit/metrics.json

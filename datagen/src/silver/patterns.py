@@ -48,6 +48,7 @@ ID_CARD = re.compile(r"\b(\d{9})\b")
 ID_CTX = re.compile(r"(паспорт|ID-?карт|ід-?карт|№\s*запису|УНЗР|унікальн\w+\s+номер\w*\s+запису)", re.I)
 UNZR = re.compile(r"\b(\d{8}-\d{5})\b")
 IBAN = re.compile(r"\bUA\d{27}\b")
+VP = re.compile(r"(?:\bВП|\b(?i:виконавч\w+\s+провадженн\w+))\s*№\s*(\d{7,10})\b")
 CARD16 = re.compile(r"\b\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\b")
 CARD_CTX = re.compile(r"(картк\w*|карт[аи]\b|card)", re.I)
 IBAN_PERSON = re.compile(r"(на\s+користь|стягувач\w*|позивач\w*|відповідач\w*|боржник\w*|"

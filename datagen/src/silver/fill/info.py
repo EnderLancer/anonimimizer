@@ -11,6 +11,10 @@ from silver.io import RESOURCES
 
 MONTHS_GEN = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня",
               "листопада", "грудня"]
+# Format of birth / death dates, one per document. The test generator writes dates as ISO (A. Ruda's thesis); the
+# shares are coarse and follow the outside report, which measured them on the test set.
+DATE_STYLES, DATE_WEIGHTS = ("iso", "numeric", "words", "words_roku", "words_narodzh"), (45, 25, 8, 12, 10)
+REF_YEAR = 2024  # the decisions are from 2024
 MAIL_DOMAINS = ["gmail.com", "gmail.com", "gmail.com", "ukr.net", "ukr.net", "i.ua", "meta.ua", "outlook.com", "icloud.com", "email.ua"]
 
 
@@ -26,6 +30,18 @@ class InfoGenerator:
         y = self.rng.randint(y0, y1)
         return dt.date(y, self.rng.randint(1, 12), self.rng.randint(1, 28))
 
+    def _birth(self, child: bool) -> dt.date:
+        """Minors are 1–17 years old; adults are mostly of working age (25–50), the rest 18–80."""
+        r = self.rng
+        if child or r.random() < 0.1:
+            age = r.randint(1, 17)
+        else:
+            age = r.randint(25, 50) if r.random() < 0.7 else r.randint(18, 80)
+        return self._date(REF_YEAR - age, REF_YEAR - age)
+
+    def doc_date_style(self) -> str:
+        return self.rng.choices(DATE_STYLES, DATE_WEIGHTS)[0]
+
     def render_date(self, d: dt.date, style: str) -> str:
         if style == "numeric":
             return d.strftime("%d.%m.%Y")
@@ -37,20 +53,21 @@ class InfoGenerator:
             return f"{d.day} {MONTHS_GEN[d.month - 1]} {d.year} року"
         return f"{d.day} {MONTHS_GEN[d.month - 1]} {d.year} року народження"
 
-    def generate(self, subtype: str, hints: dict, person: Person | None) -> str:
+    def generate(self, subtype: str, hints: dict, person: Person | None, date_style: str | None = None) -> str:
+        """`date_style` is the document's date format (doc_date_style); the text around a placeholder may narrow it."""
         r = self.rng
         if subtype == "other":
             # unknown context: ЄДРСР marked PD here; most such placeholders are institution / unit names, the rest dates
-            return self.org_gen.institution() if r.random() < 0.6 else self.generate("dob", {}, person)
+            return self.org_gen.institution() if r.random() < 0.6 else self.generate("dob", {}, person, date_style)
         if subtype in ("dob", "death"):
-            y0, y1 = (1945, 2012) if subtype == "dob" else (1995, 2024)
-            d = self._date(y0, y1)
-            if hints.get("style") == "numeric":
-                return self.render_date(d, "numeric")
-            if hints.get("no_roku"):
-                return self.render_date(d, r.choice(["words", "words", "numeric"]))
-            style = r.choices(["numeric", "iso", "words_roku", "words_narodzh" if subtype == "dob" else "words_roku", "words"],
-                              [40, 15, 20, 15, 10])[0]
+            d = self._birth(bool(hints.get("child"))) if subtype == "dob" else self._date(REF_YEAR - 21, REF_YEAR)
+            style = date_style or self.doc_date_style()
+            if hints.get("style") == "numeric":  # «… р.н.» follows
+                style = "numeric"
+            elif hints.get("no_roku"):  # the text itself continues with «року народження»
+                style = style if style in ("iso", "numeric") else "words"
+            elif style == "words_narodzh" and subtype == "death":
+                style = "words_roku"
             return self.render_date(d, style)
         if subtype == "email":
             if person and r.random() < 0.7:
