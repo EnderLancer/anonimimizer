@@ -1,0 +1,324 @@
+"""Адаптери NER-моделей: будь-яка модель (spaCy, Hugging Face token-classification, GLiNER) зводиться
+до одного формату, з яким працює решта пайплайну, — списку EntitySpan (позиції символів у тексті + мітка).
+
+Модель задається рядком "тип:назва[?опції]":
+    spacy:models/uk_ner_web_trf_13class
+    hf:dslim/bert-base-NER?aggregation=first&min_score=0.6&device=0
+    gliner:urchade/gliner_multi-v2.1?labels=person,address&threshold=0.4
+
+Адаптер повертає «сирі» мітки моделі (PER, PERS, person…; BIO-префікси прибрано). У типи челенджу
+(ОСОБА, АДРЕСА, НОМЕР, ІНФОРМАЦІЯ) їх переводить map_labels() за label_map, тож змінити відповідність
+можна без повторного інференсу: у кеші лежать сирі мітки.
+
+Новий формат моделі = новий клас з методом predict(texts), зареєстрований через @register("тип").
+
+Приватні моделі з Hugging Face: токен береться зі змінної середовища HF_TOKEN (у CI — секрет репозиторію).
+У рядок моделі токен не пишемо: рядок потрапляє в логи й у назву файлу кешу.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+import time
+from dataclasses import asdict, dataclass, replace
+from urllib.parse import parse_qsl
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+TYPES = ("ОСОБА", "АДРЕСА", "НОМЕР", "ІНФОРМАЦІЯ")
+# сирі мітки (після upper() і без BIO-префікса) -> тип; мітки, яких тут немає, відкидаються
+DEFAULT_LABEL_MAP = {"PERS": "ОСОБА", "PER": "ОСОБА", "PERSON": "ОСОБА"}
+BIO = re.compile(r"^[BIESLU]-", re.I)
+
+
+@dataclass(frozen=True)
+class EntitySpan:
+    start: int        # позиція першого символа в тексті документа
+    end: int          # позиція після останнього символа (не включно)
+    text: str         # text[start:end]
+    label: str        # сира мітка моделі (після map_labels — тип челенджу)
+    score: float = 1.0
+
+    def to_json(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_json(cls, x) -> "EntitySpan":
+        if isinstance(x, (list, tuple)):  # старий формат ner_cache.json: [start, end, text], лише PERS
+            return cls(int(x[0]), int(x[1]), x[2], "PERS")
+        return cls(int(x["start"]), int(x["end"]), x["text"], x["label"], float(x.get("score", 1.0)))
+
+
+def _is_word(ch: str) -> bool:
+    return ch.isalnum() or ch in "'’ʼ-"
+
+
+def normalize(text: str, raw, expand_words: bool = True, min_score: float = 0.0, join_spaces: bool = False) -> list[EntitySpan]:
+    """raw: (start, end, мітка, score). Прибирає BIO-префікси, пробіли по краях, за потреби розширює
+    фрагмент до меж слів (субтокени «Павлов» + «ський») і склеює фрагменти з однаковою міткою, що
+    перетинаються або стикуються. join_spaces: склеювати й ті, між якими лише пробіли в межах рядка
+    (токени B-PER I-PER без агрегації або «Павловський» + «Олег Іванович» окремими групами)."""
+    items = []
+    for s, e, label, score in raw:
+        if score < min_score:
+            continue
+        s, e = max(0, int(s)), min(len(text), int(e))
+        if expand_words:
+            while 0 < s < len(text) and _is_word(text[s - 1]) and _is_word(text[s]):
+                s -= 1
+            while 0 < e < len(text) and _is_word(text[e - 1]) and _is_word(text[e]):
+                e += 1
+        while s < e and text[s].isspace():
+            s += 1
+        while e > s and text[e - 1].isspace():
+            e -= 1
+        if e > s:
+            items.append([s, e, BIO.sub("", str(label)).upper(), float(score)])
+    items.sort()
+    merged: list[list] = []
+    for it in items:
+        last = merged[-1] if merged else None
+        if last and last[2] == it[2] and (it[0] <= last[1] or join_spaces and re.fullmatch(r"[ 	 ]+", text[last[1]:it[0]])):
+            last[1], last[3] = max(last[1], it[1]), max(last[3], it[3])
+        else:
+            merged.append(it)
+    return [EntitySpan(s, e, text[s:e], label, score) for s, e, label, score in merged]
+
+
+def map_labels(spans: list[EntitySpan], label_map: dict[str, str | None] | None = None) -> list[EntitySpan]:
+    """Сирі мітки -> типи челенджу. Мітка без відповідності (або з порожнім значенням) відкидається."""
+    label_map = DEFAULT_LABEL_MAP if label_map is None else label_map
+    out = []
+    for sp in spans:
+        t = label_map.get(sp.label.upper())
+        if t:
+            out.append(replace(sp, label=t))
+    return out
+
+
+def windows(text: str, max_chars: int, overlap: int):
+    """Вікна (a, b) не довші за max_chars, що перекриваються на ~overlap символів і ріжуться по пробілах.
+    Потрібні моделям з обмеженою довжиною входу (512 токенів), а судові рішення значно довші."""
+    n = len(text)
+    if n <= max_chars:
+        yield 0, n
+        return
+    a = 0
+    while True:
+        b = min(n, a + max_chars)
+        if b < n:
+            cut = b
+            while cut > a + max_chars // 2 and not text[cut - 1].isspace():
+                cut -= 1
+            if cut > a + max_chars // 2:
+                b = cut
+        yield a, b
+        if b >= n:
+            return
+        nxt = max(a + 1, b - overlap)
+        while nxt < b and not text[nxt - 1].isspace():
+            nxt += 1
+        a = nxt
+
+
+def hf_token() -> str | None:
+    """Токен Hugging Face для приватних моделей (None — лише публічні)."""
+    return os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN") or None
+
+
+# ---- адаптери ----
+
+ADAPTERS: dict[str, type] = {}
+
+
+def register(kind: str):
+    def deco(cls):
+        ADAPTERS[kind] = cls
+        return cls
+    return deco
+
+
+class NerAdapter:
+    """Інтерфейс: тексти -> для кожного список EntitySpan з сирими мітками моделі."""
+
+    def predict(self, texts: list[str]) -> list[list[EntitySpan]]:
+        return [self.predict_one(t) for t in texts]
+
+    def predict_one(self, text: str) -> list[EntitySpan]:
+        raise NotImplementedError
+
+
+@register("spacy")
+class SpacyAdapter(NerAdapter):
+    """spaCy-пайплайн (у т. ч. spaCy-моделі з Hugging Face, встановлені як пакет). Фрагменти вже
+    вирівняні по токенах, тому межі не розширюємо."""
+
+    def __init__(self, name: str, batch_size: int = 1):
+        import spacy
+        self.nlp = spacy.load(name)
+        self.batch_size = batch_size
+
+    def predict(self, texts):
+        return [normalize(t, [(e.start_char, e.end_char, e.label_, 1.0) for e in doc.ents], expand_words=False)
+                for t, doc in zip(texts, self.nlp.pipe(texts, batch_size=self.batch_size))]
+
+
+@register("hf")
+class HFTokenClassificationAdapter(NerAdapter):
+    """Будь-яка token-classification модель з Hugging Face через transformers.pipeline.
+
+    Розуміє обидва формати виходу пайплайна: з агрегацією ({entity_group, start, end, score, word})
+    і без неї ({entity: "B-PER", ...} по субтокенах). Якщо токенізатор не дає позицій (start/end = None),
+    фрагмент шукається в тексті за word. Довгі тексти ріжуться на вікна, що вміщаються в модель.
+    """
+
+    def __init__(self, name: str, aggregation: str = "simple", min_score: float = 0.0, device: int | str | None = None,
+                 max_chars: int = 1500, overlap: int = 200, batch_size: int = 8, join_spaces: int = 1,
+                 revision: str | None = None, pipe=None):
+        if pipe is None:
+            from transformers import pipeline
+            pipe = pipeline("token-classification", model=name, aggregation_strategy=aggregation, device=device,
+                            revision=revision and str(revision), token=hf_token())
+        self.pipe = pipe
+        self.min_score, self.max_chars, self.overlap, self.batch_size = min_score, max_chars, overlap, batch_size
+        self.join_spaces = bool(join_spaces)
+        tok = getattr(pipe, "tokenizer", None)
+        limit = getattr(tok, "model_max_length", None) or 512
+        if limit > 100_000:  # «необмежено» в токенізаторі: беремо з конфігу моделі
+            limit = getattr(getattr(getattr(pipe, "model", None), "config", None), "max_position_embeddings", 512)
+        self.tok, self.limit = tok, limit
+
+    def _fits(self, s: str) -> bool:
+        return self.tok is None or len(self.tok(s, add_special_tokens=True)["input_ids"]) <= self.limit
+
+    def _windows(self, text: str, a: int = 0, b: int | None = None, max_chars: int | None = None):
+        b = len(text) if b is None else b
+        max_chars = max_chars or self.max_chars
+        for x, y in windows(text[a:b], max_chars, min(self.overlap, max_chars // 4)):
+            if self._fits(text[a + x:a + y]) or max_chars < 50:
+                yield a + x, a + y
+            else:
+                yield from self._windows(text, a + x, a + y, max_chars // 2)
+
+    @staticmethod
+    def _locate(chunk: str, word: str, cursor: int) -> tuple[int, int] | None:
+        w = re.sub(r"^(##|▁|Ġ)", "", word or "").strip()
+        if not w:
+            return None
+        i = chunk.lower().find(w.lower(), cursor)
+        return (i, i + len(w)) if i >= 0 else None
+
+    def predict_one(self, text):
+        wins = list(self._windows(text))
+        outs = self.pipe([text[a:b] for a, b in wins], batch_size=self.batch_size)
+        if wins and outs and isinstance(outs[0], dict):  # пайплайн на одному тексті повертає плаский список
+            outs = [outs]
+        raw = []
+        for (a, b), ents in zip(wins, outs):
+            chunk, cursor = text[a:b], 0
+            for x in ents:
+                s, e = x.get("start"), x.get("end")
+                if s is None or e is None:
+                    loc = self._locate(chunk, x.get("word", ""), cursor)
+                    if loc is None:
+                        continue
+                    s, e = loc
+                cursor = e
+                raw.append((a + s, a + e, x.get("entity_group") or x.get("entity") or "", float(x.get("score", 1.0))))
+        return normalize(text, raw, expand_words=True, min_score=self.min_score, join_spaces=self.join_spaces)
+
+
+@register("gliner")
+class GlinerAdapter(NerAdapter):
+    """GLiNER (zero-shot NER): мітки задаються текстом, вихід {start, end, text, label, score}."""
+
+    def __init__(self, name: str, labels: list[str] | str = ("person",), threshold: float = 0.5,
+                 max_chars: int = 1000, overlap: int = 150, device: str | None = None, join_spaces: int = 1,
+                 revision: str | None = None, model=None):
+        if model is None:
+            from gliner import GLiNER
+            model = GLiNER.from_pretrained(name, revision=revision and str(revision), token=hf_token())
+            if device:
+                model = model.to(device)
+        self.model = model
+        self.labels = [labels] if isinstance(labels, str) else list(labels)
+        self.threshold, self.max_chars, self.overlap, self.join_spaces = threshold, max_chars, overlap, bool(join_spaces)
+
+    def predict_one(self, text):
+        raw = []
+        for a, b in windows(text, self.max_chars, self.overlap):
+            for x in self.model.predict_entities(text[a:b], self.labels, threshold=self.threshold):
+                raw.append((a + x["start"], a + x["end"], x["label"], float(x.get("score", 1.0))))
+        return normalize(text, raw, expand_words=True, join_spaces=self.join_spaces)
+
+
+# ---- фабрика і кеш ----
+
+def _value(v: str):
+    if "," in v:
+        return [x for x in v.split(",") if x]
+    for conv in (int, float):
+        try:
+            return conv(v)
+        except ValueError:
+            pass
+    return v
+
+
+def parse_spec(spec: str) -> tuple[str, str, dict]:
+    """"hf:org/model?min_score=0.5" -> ("hf", "org/model", {"min_score": 0.5}). Рядок без відомого
+    префікса (наприклад, шлях C:\\models\\x) вважається spaCy-моделлю."""
+    kind, sep, rest = spec.partition(":")
+    if not sep or kind not in ADAPTERS:
+        kind, rest = "spacy", spec
+    name, _, query = rest.partition("?")
+    return kind, name, {k: _value(v) for k, v in parse_qsl(query)}
+
+
+def adapter_options(kind: str) -> list[str]:
+    """Опції, які приймає адаптер (параметри конструктора, крім назви і підставних об'єктів для тестів)."""
+    import inspect
+    params = inspect.signature(ADAPTERS[kind].__init__).parameters
+    return [p for p in params if p not in ("self", "name", "pipe", "model")]
+
+
+def make_spec(kind: str, name: str, **opts) -> str:
+    """("hf", "org/model", min_score=0.6, overlap="") -> "hf:org/model?min_score=0.6". Порожні значення
+    пропускаються (діє значення адаптера за замовчуванням), невідомі для цього типу опції — помилка."""
+    from urllib.parse import urlencode
+    if kind not in ADAPTERS:
+        raise ValueError(f"невідомий тип моделі {kind!r}; доступні: {', '.join(ADAPTERS)}")
+    bad = [k for k in opts if k not in adapter_options(kind)]
+    if bad:
+        raise ValueError(f"тип {kind} не має опцій {bad}; доступні: {', '.join(adapter_options(kind))}")
+    q = {k: ",".join(v) if isinstance(v, (list, tuple)) else v for k, v in opts.items() if v not in (None, "")}
+    return f"{kind}:{name}" + (f"?{urlencode(q, safe=',/')}" if q else "")
+
+
+def load_adapter(spec: str) -> NerAdapter:
+    kind, name, opts = parse_spec(spec)
+    return ADAPTERS[kind](name, **opts)
+
+
+def cache_path(spec: str, legacy_spec: str | None = None, legacy_path: str | None = None) -> str:
+    """Окремий кеш на кожну модель; для моделі за замовчуванням — історичний ner_cache.json."""
+    if legacy_spec and legacy_path and parse_spec(spec) == parse_spec(legacy_spec):
+        return legacy_path
+    return os.path.join(HERE, "ner_cache", re.sub(r"[^\w.-]+", "_", spec).strip("_") + ".json")
+
+
+def run_ner(rows: list[dict], spec: str, cache_file: str, save_every: int = 10) -> dict[str, list[EntitySpan]]:
+    """Сирі фрагменти моделі для кожного документа {id, original}; інференс лише для документів, яких немає в кеші."""
+    cache = json.load(open(cache_file, encoding="utf8")) if os.path.exists(cache_file) else {}
+    todo = [r for r in rows if str(r["id"]) not in cache]
+    if todo:
+        adapter = load_adapter(spec)
+        os.makedirs(os.path.dirname(cache_file) or ".", exist_ok=True)
+        t0 = time.time()
+        for i, r in enumerate(todo, 1):
+            cache[str(r["id"])] = [sp.to_json() for sp in adapter.predict([r["original"]])[0]]
+            if i % save_every == 0 or i == len(todo):
+                json.dump(cache, open(cache_file, "w", encoding="utf8"), ensure_ascii=False)
+                print(f"NER {spec}: {i}/{len(todo)} {time.time() - t0:.0f}s", file=sys.stderr, flush=True)
+    return {str(r["id"]): [EntitySpan.from_json(x) for x in cache[str(r["id"])]] for r in rows}

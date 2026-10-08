@@ -32,6 +32,51 @@ python run.py cases.jsonl out.jsonl --mode full          # 3. + CRF (найкр�
 
 Для режимів 0, 2 і 3 потрібна модель `uk_ner_web_trf_13class` (spaCy): покладіть її в `models/uk_ner_web_trf_13class` або задайте шлях змінною `UK_NER_MODEL`. Вихід моделі для тесту вже збережено в `ner_cache.json`, тому на тесті інференс не запускається. Для режиму 3 потрібен пакет `python-crfsuite`.
 
+### Інші NER-моделі (Hugging Face)
+
+Модель для ОСОБА (і, за бажанням, інших типів) задається через `--ner`. Адаптери в `ner_adapters.py` зводять будь-який вихід моделі до одного формату `EntitySpan(start, end, text, label, score)` (позиції символів у документі), з яким працює решта пайплайну.
+
+```bash
+python run.py cases.jsonl out.jsonl --ner "hf:dslim/bert-base-NER?aggregation=first&min_score=0.6"
+python run.py cases.jsonl out.jsonl --ner "gliner:urchade/gliner_multi-v2.1?labels=person,address&threshold=0.4" --ner-label ADDRESS=АДРЕСА
+python run.py cases.jsonl out.jsonl --ner spacy:path/to/model   # за замовчуванням: spaCy-модель з UK_NER_MODEL
+```
+
+| Тип | Формат виходу моделі | Опції (`?ключ=значення&…`) | Пакет |
+|---|---|---|---|
+| `spacy` | `doc.ents` | `batch_size` | `spacy` |
+| `hf` | `transformers.pipeline("token-classification")`: з агрегацією (`entity_group`) і без (`B-PER`/`I-PER` по токенах); позиції або, якщо їх немає, пошук за `word` | `aggregation`, `min_score`, `device`, `max_chars`, `overlap`, `batch_size`, `join_spaces` | `transformers`, `torch` |
+| `gliner` | `predict_entities` → `{start, end, label, score}` | `labels`, `threshold`, `device`, `max_chars`, `overlap`, `join_spaces` | `gliner` |
+
+- Мітки моделі переводяться в типи челенджу через `--ner-label МІТКА=ТИП` (повторюваний). За замовчуванням `PER`, `PERS`, `PERSON` → ОСОБА, решта відкидається; `МІТКА=` вимикає мітку. Не-ОСОБА фрагменти моделі йдуть у пайплайн як додаткові кандидати, як і кандидати CRF.
+- Адаптер прибирає BIO-префікси, розширює фрагменти до меж слів (субтокени), склеює фрагменти однієї мітки, між якими лише пробіл (`join_spaces=0` вимикає), і ріже довгі документи на вікна з перекриттям, що вміщаються в модель.
+- Кеш окремий для кожної моделі: `ner_cache/<модель>.json` (для моделі за замовчуванням — `ner_cache.json`). У кеші лежать сирі мітки, тож `--ner-label` можна змінювати без повторного інференсу.
+- Новий формат: клас з методом `predict_one(text) -> list[EntitySpan]` (зручно через `normalize()`), зареєстрований декоратором `@register("тип")`.
+- Ще опція `revision` (гілка, тег або коміт моделі на HF) для `hf` і `gliner`.
+- **Приватні моделі:** токен Hugging Face береться зі змінної середовища `HF_TOKEN`. У рядок моделі його не пишемо: рядок потрапляє в логи й у назву кешу.
+
+#### Запуск у GitHub Actions
+
+Actions → **NER model evaluation** → Run workflow (`.github/workflows/ner-models.yml`, лише ручний запуск). Job `ner` один раз проганяє модель на CPU і зберігає `ner_cache/` як артефакт. Далі кожен обраний режим оцінюється окремо, а job `summary` збирає таблицю балів за режимами.
+
+| Параметр | Що задає |
+|---|---|
+| `model_type`, `model`, `revision` | тип адаптера (`hf` / `gliner` / `spacy`), репозиторій або пакет, версія моделі |
+| `ner_labels` | `МІТКА=ТИП` через пробіл, як `--ner-label` |
+| `aggregation`, `min_score` | опції `hf` |
+| `gliner_labels`, `threshold` | опції `gliner` |
+| `max_chars`, `overlap`, `batch_size`, `join_spaces` | вікна для довгих документів, батч, склеювання через пробіл |
+| `ner_options` | будь-які інші опції адаптера: `key=value&key=value` |
+| `modes` | `model`, `model_regex`, `full`, `regex` (базова лінія без моделі) |
+| `test_data`, `limit` | файл з даними й розміткою, перші N документів для швидкої перевірки |
+| `cosine`, `cosine_model` | cosine similarity в `evaluate.py` |
+| `fail_below` | падати, якщо бал (%) нижчий |
+| `extra_pip`, `hf_cache` | додаткові пакети (напр. wheel spaCy-моделі), кешування ваг між запусками |
+
+Порожній параметр означає значення адаптера за замовчуванням. Параметр, якого обраний тип не має, ігнорується з попередженням.
+
+Для приватних моделей додайте секрет репозиторію `HF_TOKEN` (Settings → Secrets and variables → Actions) з read-токеном спільного акаунта Hugging Face. Токен передається лише в job `ner`.
+
 ## Як це працює
 
 1. **ОСОБА.** Базово працює spaCy `uk_ner_web_trf_13class` (мітка PERS). Доповнює її regex: повне ПІБ (Прізвище Ім'я По-батькові), «Прізвище І. П.», «І. П. Прізвище», «Прізвище І.». Regex-фрагмент додається, лише якщо не перетинається з фрагментом моделі. Службові слова (позивач, відповідач, суд, головуючий…) відкидаються. Фрагменти однієї особи кластеризуються і отримують спільний номер (`ОСОБА_n`).
@@ -95,6 +140,8 @@ python run.py cases.jsonl out.jsonl --mode full          # 3. + CRF (найкр�
 | Файл | Призначення |
 |---|---|
 | `run.py` | запуск трьох режимів |
+| `ner_adapters.py` | адаптери NER-моделей (spaCy, Hugging Face, GLiNER) до спільного формату `EntitySpan`, кеш |
+| `.github/workflows/ner-models.yml` | ручна оцінка з довільною NER-моделлю |
 | `predict_trf.py` | усі правила (АДРЕСА, НОМЕР, ІНФОРМАЦІЯ), злиття, нумерація псевдонімів |
 | `regex_persons.py` | regex для ОСОБА |
 | `predict.py`, `common.py` | CRF-ознаки, інференс CRF, кластеризація осіб |
