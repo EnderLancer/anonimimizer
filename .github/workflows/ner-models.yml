@@ -1,15 +1,17 @@
 # Ручна оцінка пайплайну з іншою NER-моделлю (Actions → NER model evaluation → Run workflow).
 #
-#   ner:      рядок моделі з параметрів ──► завантаження (HF_TOKEN для приватних) ──► run.py --mode model
-#             ──► ner_cache/<модель>.json (артефакт)
+#   setup:    рядок моделі з параметрів, режими, ключ кешу; якщо вихід цієї моделі на цих даних уже є в кеші,
+#             інференс пропускається
+#   ner:      shards паралельних jobs, кожна проганяє модель на своїй частині документів (HF_TOKEN для приватних)
+#   merge:    частини ──► ner_cache/<модель>.json (артефакт + кеш для наступних запусків)
 #   evaluate: для кожного режиму run.py --ner <модель> з готовим кешем ──► data/evaluate.py ──► summary
 #   summary:  зведена таблиця по режимах
 #
-# Інференс іде один раз у job ner на CPU, режими лише перевикористовують кеш.
+# Інференс іде на CPU, тож основне прискорення — параметр shards (частини збалансовані за довжиною тексту).
 # Порожній параметр = значення адаптера за замовчуванням (див. ner_adapters.py). Параметри, яких обраний
 # тип моделі не має (напр. gliner_labels для hf), ігноруються з попередженням.
 # Приватні моделі: секрет репозиторію HF_TOKEN (Settings → Secrets and variables → Actions) з токеном
-# спільного акаунта Hugging Face, достатньо прав read. Токен потрапляє лише в job ner.
+# спільного акаунта Hugging Face, достатньо прав read. Токен потрапляє лише в jobs ner.
 name: NER model evaluation
 run-name: "NER: ${{ inputs.model_type }}:${{ inputs.model }} (${{ inputs.modes }})"
 
@@ -64,6 +66,9 @@ on:
         description: "Додаткові опції адаптера як query: key=value&key=value"
         default: ""
       # --- прогін і оцінка ---
+      shards:
+        description: "Скільки паралельних jobs для інференсу (1–20); на CPU це основне прискорення"
+        default: "8"
       modes:
         description: "Режими через кому: model, model_regex, full, regex (базова лінія без моделі)"
         default: "model,model_regex,full"
@@ -99,16 +104,20 @@ env:
   TEST_DATA: ${{ inputs.test_data }}
   LIMIT: ${{ inputs.limit }}
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  TOKENIZERS_PARALLELISM: "false"
 
 jobs:
-  ner:
-    name: NER inference
+  setup:
+    name: Setup
     runs-on: ubuntu-latest
-    timeout-minutes: 180
     outputs:
       ner: ${{ steps.spec.outputs.ner }}
       modes: ${{ steps.spec.outputs.modes }}
       needs_model: ${{ steps.spec.outputs.needs_model }}
+      shards: ${{ steps.spec.outputs.shards }}
+      n_shards: ${{ steps.spec.outputs.n_shards }}
+      cache_key: ${{ steps.key.outputs.cache_key }}
+      cached: ${{ steps.restore.outputs.cache-hit == 'true' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -122,6 +131,7 @@ jobs:
           KIND: ${{ inputs.model_type }}
           MODEL: ${{ inputs.model }}
           MODES: ${{ inputs.modes }}
+          SHARDS: ${{ inputs.shards }}
           OPT_revision: ${{ inputs.revision }}
           OPT_aggregation: ${{ inputs.aggregation }}
           OPT_min_score: ${{ inputs.min_score }}
@@ -154,8 +164,12 @@ jobs:
           bad = [m for m in modes if m not in valid]
           if not modes or bad:
               sys.exit(f"невідомі режими {bad}; доступні: {', '.join(valid)}")
+          shards = os.environ.get("SHARDS", "").strip() or "1"
+          if not shards.isdigit() or not 1 <= int(shards) <= 20:
+              sys.exit(f"shards має бути числом від 1 до 20, отримано {shards!r}")
           needs_model = str(any(m != "regex" for m in modes)).lower()
-          out = f"ner={spec}\nmodes={json.dumps(modes)}\nneeds_model={needs_model}\n"
+          out = (f"ner={spec}\nmodes={json.dumps(modes)}\nneeds_model={needs_model}\n"
+                 f"shards={json.dumps(list(range(int(shards))))}\nn_shards={int(shards)}\n")
           print(out, end="")
           open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf8").write(out)
           EOF
@@ -163,56 +177,141 @@ jobs:
       - name: Prepare data
         run: bash .github/scripts/prepare_data.sh
 
-      - name: Install dependencies
-        if: steps.spec.outputs.needs_model == 'true'
+      # кеш виходу моделі між запусками: та сама модель з тими самими опціями, ті самі дані, той самий адаптер
+      - name: NER cache key
+        id: key
         env:
-          KIND: ${{ inputs.model_type }}
-          EXTRA_PIP: ${{ inputs.extra_pip }}
-        run: |
-          pip install python-crfsuite
-          case "$KIND" in
-            hf)     pip install torch --index-url https://download.pytorch.org/whl/cpu
-                    pip install "transformers[sentencepiece]" ;;
-            gliner) pip install torch --index-url https://download.pytorch.org/whl/cpu
-                    pip install gliner ;;
-            spacy)  pip install spacy ;;
-          esac
-          if [ -n "$EXTRA_PIP" ]; then pip install $EXTRA_PIP; fi
-
-      - name: Cache model weights
-        if: steps.spec.outputs.needs_model == 'true' && inputs.hf_cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/huggingface
-          key: hf-${{ inputs.model_type }}-${{ inputs.model }}-${{ inputs.revision }}
-
-      - name: Run NER (fills ner_cache/)
-        if: steps.spec.outputs.needs_model == 'true'
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
           NER: ${{ steps.spec.outputs.ner }}
         run: |
-          args=(); for l in $NER_LABELS; do args+=(--ner-label "$l"); done
-          python run.py out/data.jsonl out/submission.jsonl --mode model --ner "$NER" "${args[@]}"
+          h() { sha256sum | cut -c1-16; }
+          echo "cache_key=ner-v1-$(printf '%s' "$NER" | h)-$(cat out/data.jsonl ner_adapters.py | h)" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Restore NER cache
+        id: restore
+        if: steps.spec.outputs.needs_model == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: ner_cache/
+          key: ${{ steps.key.outputs.cache_key }}
+
+      - name: Reuse cached NER output
+        if: steps.restore.outputs.cache-hit == 'true'
+        run: echo "::notice::Вихід моделі взято з кешу попереднього запуску, інференс пропущено"
 
       - uses: actions/upload-artifact@v6
-        if: steps.spec.outputs.needs_model == 'true'
+        if: steps.restore.outputs.cache-hit == 'true'
         with:
           name: ner-cache
           path: ner_cache/
           if-no-files-found: error
 
+  ner:
+    name: NER inference (${{ matrix.shard }})
+    needs: setup
+    if: needs.setup.outputs.needs_model == 'true' && needs.setup.outputs.cached != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      matrix:
+        shard: ${{ fromJSON(needs.setup.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        env:
+          KIND: ${{ inputs.model_type }}
+          EXTRA_PIP: ${{ inputs.extra_pip }}
+        run: |
+          case "$KIND" in
+            hf)     uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
+                    uv pip install --system "transformers[sentencepiece]" ;;
+            gliner) uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
+                    uv pip install --system gliner ;;
+            spacy)  uv pip install --system spacy ;;
+          esac
+          if [ -n "$EXTRA_PIP" ]; then uv pip install --system $EXTRA_PIP; fi
+
+      - name: Cache model weights
+        if: inputs.hf_cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ inputs.model_type }}-${{ inputs.model }}-${{ inputs.revision }}
+
+      - name: Prepare data
+        run: bash .github/scripts/prepare_data.sh
+
+      - name: Run NER on shard
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          NER: ${{ needs.setup.outputs.ner }}
+          SHARD: ${{ matrix.shard }}
+          N_SHARDS: ${{ needs.setup.outputs.n_shards }}
+        run: python ner_adapters.py infer out/data.jsonl --ner "$NER" --shard "$SHARD/$N_SHARDS" --out "out/ner-part-$SHARD.json"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ner-part-${{ matrix.shard }}
+          path: out/ner-part-${{ matrix.shard }}.json
+          if-no-files-found: error
+
+  merge:
+    name: Merge NER shards
+    needs: [setup, ner]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: ner-part-*
+          path: parts/
+          merge-multiple: true
+
+      - name: Prepare data
+        run: bash .github/scripts/prepare_data.sh
+
+      - name: Merge
+        env:
+          NER: ${{ needs.setup.outputs.ner }}
+        run: python ner_adapters.py merge out/data.jsonl --ner "$NER" parts/*.json
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ner-cache
+          path: ner_cache/
+          if-no-files-found: error
+
+      - uses: actions/cache/save@v4
+        with:
+          path: ner_cache/
+          key: ${{ needs.setup.outputs.cache_key }}
+
   evaluate:
     name: Evaluate (${{ matrix.mode }})
-    needs: ner
+    needs: [setup, merge]
+    # вихід моделі є з merge, з кешу попереднього запуску, або режими взагалі без моделі
+    if: >-
+      always() && needs.setup.result == 'success' &&
+      (needs.merge.result == 'success' || needs.setup.outputs.cached == 'true' || needs.setup.outputs.needs_model != 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        mode: ${{ fromJSON(needs.ner.outputs.modes) }}
+        mode: ${{ fromJSON(needs.setup.outputs.modes) }}
     env:
-      NER: ${{ needs.ner.outputs.ner }}
+      NER: ${{ needs.setup.outputs.ner }}
       MODE: ${{ matrix.mode }}
     steps:
       - uses: actions/checkout@v5
@@ -221,14 +320,16 @@ jobs:
         with:
           python-version: "3.11"
 
+      - uses: astral-sh/setup-uv@v6
+
       - name: Install dependencies
         env:
           COSINE: ${{ inputs.cosine }}
         run: |
-          pip install python-crfsuite
+          uv pip install --system python-crfsuite
           if [ "$COSINE" = "true" ]; then
-            pip install torch --index-url https://download.pytorch.org/whl/cpu
-            pip install sentence-transformers
+            uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
+            uv pip install --system sentence-transformers
           fi
 
       - uses: actions/download-artifact@v7
@@ -279,8 +380,8 @@ jobs:
 
   summary:
     name: Summary
-    needs: [ner, evaluate]
-    if: always() && needs.ner.result == 'success'
+    needs: [setup, evaluate]
+    if: always() && needs.setup.result == 'success' && needs.evaluate.result != 'skipped'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v7
@@ -290,7 +391,7 @@ jobs:
 
       - name: Table
         env:
-          NER: ${{ needs.ner.outputs.ner }}
+          NER: ${{ needs.setup.outputs.ner }}
         run: |
           python - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
           import glob, json, os

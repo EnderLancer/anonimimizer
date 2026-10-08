@@ -53,11 +53,14 @@ python run.py cases.jsonl out.jsonl --ner spacy:path/to/model   # за замо�
 - Кеш окремий для кожної моделі: `ner_cache/<модель>.json` (для моделі за замовчуванням — `ner_cache.json`). У кеші лежать сирі мітки, тож `--ner-label` можна змінювати без повторного інференсу.
 - Новий формат: клас з методом `predict_one(text) -> list[EntitySpan]` (зручно через `normalize()`), зареєстрований декоратором `@register("тип")`.
 - Ще опція `revision` (гілка, тег або коміт моделі на HF) для `hf` і `gliner`.
+- `hf` з fast-токенізатором ріже документ на вікна по токенах (до ліміту моделі, перекриття `stride`, за замовчуванням 64 токени). Для моделей з англомовним словником кирилиця йде майже по токену на символ, тож вікна по символах були б або задовгими, або напівпорожніми. `quantize=1` вмикає динамічну int8-квантизацію: на CPU швидше в ~1,5–2 рази, точність може трохи змінитися.
 - **Приватні моделі:** токен Hugging Face береться зі змінної середовища `HF_TOKEN`. У рядок моделі його не пишемо: рядок потрапляє в логи й у назву кешу.
 
 #### Запуск у GitHub Actions
 
-Actions → **NER model evaluation** → Run workflow (`.github/workflows/ner-models.yml`, лише ручний запуск). Job `ner` один раз проганяє модель на CPU і зберігає `ner_cache/` як артефакт. Далі кожен обраний режим оцінюється окремо, а job `summary` збирає таблицю балів за режимами.
+Actions → **NER model evaluation** → Run workflow (`.github/workflows/ner-models.yml`, лише ручний запуск). Інференс іде на CPU і ділиться на `shards` паралельних jobs (за замовчуванням 8, частини збалансовані за довжиною тексту). Job `merge` зливає частини в `ner_cache/` і кешує результат між запусками: та сама модель з тими самими опціями на тих самих даних більше не проганяється, тож зміна `ner_labels` чи `modes` займає хвилини. Далі кожен режим оцінюється окремо, а job `summary` збирає таблицю балів за режимами.
+
+Локально те саме: `python ner_adapters.py infer data.jsonl --ner SPEC --shard 0/4 --out part0.json`, потім `python ner_adapters.py merge data.jsonl --ner SPEC part*.json`.
 
 | Параметр | Що задає |
 |---|---|
@@ -68,6 +71,7 @@ Actions → **NER model evaluation** → Run workflow (`.github/workflows/ner-mo
 | `max_chars`, `overlap`, `batch_size`, `join_spaces` | вікна для довгих документів, батч, склеювання через пробіл |
 | `ner_options` | будь-які інші опції адаптера: `key=value&key=value` |
 | `modes` | `model`, `model_regex`, `full`, `regex` (базова лінія без моделі) |
+| `shards` | кількість паралельних jobs інференсу (1–20) |
 | `test_data`, `limit` | файл з даними й розміткою, перші N документів для швидкої перевірки |
 | `cosine`, `cosine_model` | cosine similarity в `evaluate.py` |
 | `fail_below` | падати, якщо бал (%) нижчий |

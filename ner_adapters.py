@@ -170,17 +170,22 @@ class HFTokenClassificationAdapter(NerAdapter):
 
     Розуміє обидва формати виходу пайплайна: з агрегацією ({entity_group, start, end, score, word})
     і без неї ({entity: "B-PER", ...} по субтокенах). Якщо токенізатор не дає позицій (start/end = None),
-    фрагмент шукається в тексті за word. Довгі тексти ріжуться на вікна, що вміщаються в модель.
+    фрагмент шукається в тексті за word. Довгі тексти ріжуться на вікна, що вміщаються в модель: з fast-токенізатором
+    по токенах (stride — перекриття в токенах), інакше по символах (max_chars, overlap).
+    quantize=1 — динамічна int8-квантизація лінійних шарів: на CPU швидше в ~1,5–2 рази, точність може трохи змінитися.
     """
 
     def __init__(self, name: str, aggregation: str = "simple", min_score: float = 0.0, device: int | str | None = None,
                  max_chars: int = 1500, overlap: int = 200, batch_size: int = 8, join_spaces: int = 1,
-                 revision: str | None = None, pipe=None):
+                 revision: str | None = None, stride: int = 64, quantize: int = 0, pipe=None):
         if pipe is None:
             from transformers import pipeline
             pipe = pipeline("token-classification", model=name, aggregation_strategy=aggregation, device=device,
                             revision=revision and str(revision), token=hf_token())
-        self.pipe = pipe
+            if quantize:
+                import torch
+                pipe.model = torch.ao.quantization.quantize_dynamic(pipe.model, {torch.nn.Linear}, dtype=torch.qint8)
+        self.pipe, self.stride = pipe, stride
         self.min_score, self.max_chars, self.overlap, self.batch_size = min_score, max_chars, overlap, batch_size
         self.join_spaces = bool(join_spaces)
         tok = getattr(pipe, "tokenizer", None)
@@ -189,10 +194,51 @@ class HFTokenClassificationAdapter(NerAdapter):
             limit = getattr(getattr(getattr(pipe, "model", None), "config", None), "max_position_embeddings", 512)
         self.tok, self.limit = tok, limit
 
+    def _fast(self) -> bool:
+        return getattr(self.tok, "backend_tokenizer", None) is not None
+
+    def _n_tokens(self, s: str) -> int:
+        if self._fast():  # без попередження «sequence length is longer than … 512» на довгих текстах
+            return len(self.tok.backend_tokenizer.encode(s, add_special_tokens=True).ids)
+        return len(self.tok(s, add_special_tokens=True)["input_ids"])
+
     def _fits(self, s: str) -> bool:
-        return self.tok is None or len(self.tok(s, add_special_tokens=True)["input_ids"]) <= self.limit
+        return self.tok is None or self._n_tokens(s) <= self.limit
+
+    def _token_windows(self, text: str):
+        """Документ токенізується один раз; вікно — до limit токенів, перекриття stride токенів, межі — на початку слова.
+        Для моделей з англомовним словником кирилиця йде майже по токену на символ, тож вікна по символах
+        виходять або задовгими, або напівпорожніми."""
+        offs = self.tok.backend_tokenizer.encode(text, add_special_tokens=False).offsets
+        n = len(offs)
+        size = self.limit - self.tok.num_special_tokens_to_add() - 8  # запас: на межі вікна токенізація може трохи змінитися
+        stride = min(self.stride, size // 4)
+        word_start = lambda k: k == 0 or offs[k][0] > offs[k - 1][1]  # перед токеном пробіл
+        i = 0
+        while i < n:
+            j = min(n, i + size)
+            if j < n:
+                k = j
+                while k > i + size // 2 and not word_start(k):
+                    k -= 1
+                if k > i + size // 2:
+                    j = k
+            yield offs[i][0], offs[j - 1][1]
+            if j >= n:
+                return
+            k = max(i + 1, j - stride)
+            while k < j and not word_start(k):
+                k += 1
+            i = k
 
     def _windows(self, text: str, a: int = 0, b: int | None = None, max_chars: int | None = None):
+        if a == 0 and b is None and self._fast():
+            for x, y in self._token_windows(text):
+                if self._fits(text[x:y]):
+                    yield x, y
+                else:
+                    yield from self._windows(text, x, y, self.max_chars)
+            return
         b = len(text) if b is None else b
         max_chars = max_chars or self.max_chars
         for x, y in windows(text[a:b], max_chars, min(self.overlap, max_chars // 4)):
@@ -322,3 +368,54 @@ def run_ner(rows: list[dict], spec: str, cache_file: str, save_every: int = 10) 
                 json.dump(cache, open(cache_file, "w", encoding="utf8"), ensure_ascii=False)
                 print(f"NER {spec}: {i}/{len(todo)} {time.time() - t0:.0f}s", file=sys.stderr, flush=True)
     return {str(r["id"]): [EntitySpan.from_json(x) for x in cache[str(r["id"])]] for r in rows}
+
+
+def shard(rows: list[dict], i: int, n: int) -> list[dict]:
+    """i-та з n частин документів, збалансованих за довжиною тексту (найдовші — у найменш завантажену частину)."""
+    load, part = [0] * n, {}
+    for k in sorted(range(len(rows)), key=lambda k: (-len(rows[k]["original"]), k)):
+        j = min(range(n), key=lambda j: (load[j], j))
+        load[j] += len(rows[k]["original"])
+        part[k] = j
+    return [r for k, r in enumerate(rows) if part[k] == i]
+
+
+def main(argv=None):
+    """CLI для CI: інференс частини документів і злиття частин у кеш, який читає run.py.
+
+    python ner_adapters.py infer data.jsonl --ner SPEC --shard 2/8 --out part2.json
+    python ner_adapters.py merge data.jsonl --ner SPEC part*.json      # -> ner_cache/<модель>.json
+    """
+    import argparse
+    ap = argparse.ArgumentParser(description=main.__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("cmd", choices=["infer", "merge"])
+    ap.add_argument("data")
+    ap.add_argument("parts", nargs="*", help="merge: файли частин")
+    ap.add_argument("--ner", required=True)
+    ap.add_argument("--shard", default="0/1", help="infer: i/n, i від 0")
+    ap.add_argument("--out", help="infer: файл результату (за замовчуванням — кеш моделі)")
+    a = ap.parse_intermixed_args(argv)
+    rows = [json.loads(l) for l in open(a.data, encoding="utf8") if l.strip()]
+    target = cache_path(a.ner)
+    if a.cmd == "infer":
+        i, n = map(int, a.shard.split("/"))
+        part = shard(rows, i, n)
+        print(f"частина {i}/{n}: {len(part)} документів, {sum(len(r['original']) for r in part)} символів", file=sys.stderr)
+        out = a.out or target
+        run_ner(part, a.ner, out)
+        if not os.path.exists(out):  # порожня частина: файл однаково потрібен для злиття
+            json.dump({}, open(out, "w", encoding="utf8"))
+        return
+    cache = json.load(open(target, encoding="utf8")) if os.path.exists(target) else {}
+    for p in a.parts:
+        cache.update(json.load(open(p, encoding="utf8")))
+    missing = [str(r["id"]) for r in rows if str(r["id"]) not in cache]
+    if missing:
+        sys.exit(f"у кеші немає {len(missing)} документів, напр. {missing[:5]}")
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    json.dump(cache, open(target, "w", encoding="utf8"), ensure_ascii=False)
+    print(target)
+
+
+if __name__ == "__main__":
+    main()
