@@ -1,5 +1,6 @@
 # Автодеплой демо на Hugging Face Space:
 #   push у main ──► Evaluation (evaluate.yml) успішна ──► build_space.sh ──► hf upload у Space
+#                ──► чекаємо RUNNING на новому коміті ──► smoke-test /pseudonymize (падає, якщо Space зламаний)
 #
 # Потрібно в Settings → Secrets and variables → Actions:
 #   змінна HF_SPACE — <акаунт>/<назва> Space; поки її немає, автодеплой пропускається;
@@ -31,7 +32,7 @@ jobs:
   deploy:
     if: github.event_name == 'workflow_dispatch' || (vars.HF_SPACE != '' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v5
         with:
@@ -64,3 +65,41 @@ jobs:
             --commit-message "Deploy ${sha::7} from GitHub" \
             --commit-description "https://github.com/${{ github.repository }}/commit/$sha"
           echo "Deployed to https://huggingface.co/spaces/$HF_SPACE" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Smoke-test the Space
+        env:
+          HF_SPACE: ${{ vars.HF_SPACE }}
+        run: |
+          pip install -q gradio_client
+          python - <<'EOF'
+          import json, os, sys, time, urllib.request
+          from gradio_client import Client
+
+          space = os.environ["HF_SPACE"]
+          api = f"https://huggingface.co/api/spaces/{space}"
+          failed = {"BUILD_ERROR", "RUNTIME_ERROR", "CONFIG_ERROR", "NO_APP_FILE", "PAUSED", "STOPPED"}
+
+          # Чекаємо, поки запущено збірку саме нового коміту (runtime.sha == sha репозиторію).
+          deadline = time.time() + 55 * 60
+          while True:
+              with urllib.request.urlopen(api, timeout=60) as r:
+                  d = json.load(r)
+              stage, runtime_sha = d["runtime"]["stage"], d["runtime"].get("sha")
+              print(f"stage={stage} runtime_sha={runtime_sha} head={d['sha']}")
+              if stage == "RUNNING" and runtime_sha == d["sha"]:
+                  break
+              if stage in failed:
+                  sys.exit(f"::error::Space stage {stage}")
+              if time.time() > deadline:
+                  sys.exit("::error::Space did not reach RUNNING within 55 minutes")
+              time.sleep(30)
+
+          text = ("Позивач Коваленко Марія Іванівна, РНОКПП 3112408765, "
+                  "проживає за адресою: м. Київ, вул. Січових Стрільців, буд. 21, кв. 14.")
+          _, out, _, _ = Client(space).predict(text, "full", "spacy:dchaplinsky/uk_ner_web_trf_13class", "",
+                                              api_name="/pseudonymize")
+          missing = [t for t in ("[ОСОБА_1]", "[НОМЕР_1]", "[АДРЕСА_1]") if t not in out]
+          if missing:
+              sys.exit(f"::error::smoke test failed, missing {missing}: {out}")
+          print("smoke test OK:", out)
+          EOF
