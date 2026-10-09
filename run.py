@@ -1,21 +1,19 @@
-"""Єдина точка запуску чотирьох конфігурацій.
+"""Єдина точка запуску трьох конфігурацій.
 
-python run.py cases.jsonl out.jsonl --mode model        # лише NER-модель (ОСОБА), без правил і CRF
-python run.py cases.jsonl out.jsonl --mode regex        # лише правила (без нейромережі і CRF)
-python run.py cases.jsonl out.jsonl --mode model_regex  # NER-модель + правила
-python run.py cases.jsonl out.jsonl --mode full         # NER-модель + правила + CRF (найкраще)
+python run.py cases.jsonl out.jsonl --mode model        # лише NER-модель (ОСОБА), без правил
+python run.py cases.jsonl out.jsonl --mode regex        # лише правила (без нейромережі)
+python run.py cases.jsonl out.jsonl --mode model_regex  # NER-модель + правила (найкраще)
 
 Інша NER-модель (див. ner_adapters.py), наприклад з Hugging Face:
 python run.py cases.jsonl out.jsonl --ner "hf:dslim/bert-base-NER?aggregation=first" --ner-label LOC=АДРЕСА
 
 Формат вхідного рядка: {"id": ..., "original": "текст"}. Вихід: {"id", "annotations": [{start, end, pseudonym}]}.
 """
-import argparse, json, os
+import argparse, json
 import predict_trf as P
 import ner_adapters as N
 import ner_postprocess as NP
 
-HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_NER = "spacy:" + P.MODEL
 
 
@@ -47,7 +45,7 @@ def parse_label_map(items):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("src"); ap.add_argument("dst")
-    ap.add_argument("--mode", choices=["model", "regex", "model_regex", "full"], default="full")
+    ap.add_argument("--mode", choices=["model", "regex", "model_regex"], default="model_regex")
     ap.add_argument("--ner", default=DEFAULT_NER, help="NER-модель: spacy:<шлях> | hf:<repo>[?опції] | gliner:<repo>[?опції]")
     ap.add_argument("--ner-label", action="append", default=[], metavar="МІТКА=ТИП",
                     help="відповідність мітки моделі типу челенджу, напр. LOC=АДРЕСА; МІТКА= вимикає мітку; "
@@ -55,22 +53,14 @@ def main():
     a = ap.parse_args()
     rows = [json.loads(l) for l in open(a.src, encoding="utf8")]
     ner = ner_spans(rows, a.ner, parse_label_map(a.ner_label)) if a.mode != "regex" else {}
-    tagger = load_tagger() if a.mode == "full" else None
     with open(a.dst, "w", encoding="utf8") as g:
         for r in rows:
-            ann = annotate(r["original"], ner.get(str(r["id"]), []), a.mode, tagger)
+            ann = annotate(r["original"], ner.get(str(r["id"]), []), a.mode)
             g.write(json.dumps({"id": r["id"], "annotations": ann}, ensure_ascii=False) + "\n")
 
 
-def load_tagger():
-    import pycrfsuite
-    tagger = pycrfsuite.Tagger(); tagger.open(os.path.join(HERE, "crf2.model"))
-    return tagger
-
-
-def annotate(text, spans, mode="full", tagger=None):
-    """Анотації одного документа [{start, end, pseudonym}]. spans — сутності моделі з типами челенджу (після ner_spans),
-    tagger — CRF (load_tagger) для режиму full."""
+def annotate(text, spans, mode="model_regex"):
+    """Анотації одного документа [{start, end, pseudonym}]. spans — сутності моделі з типами челенджу (після ner_spans)."""
     from regex_persons import persons as rx_persons
     pers = [[x.start, x.end, x.text] for x in spans if x.label == "ОСОБА"]          # ОСОБА від моделі (пріоритет)
     extra = [(x.start, x.end, x.label) for x in spans if x.label != "ОСОБА"]       # інші типи, якщо модель їх дає
@@ -79,9 +69,6 @@ def annotate(text, spans, mode="full", tagger=None):
     for s, e, _ in rx_persons(text):                                     # + regex-особи, що не перетинаються з моделлю
         if not any(s < p[1] and p[0] < e for p in pers):
             pers.append([s, e, text[s:e]])
-    if mode == "full" and tagger:
-        import predict
-        extra += [x for x in predict.predict_doc(tagger, text) if x[2] in ("НОМЕР", "ІНФОРМАЦІЯ", "АДРЕСА")]
     return P.pseudonymize(text, pers, extra=extra)
 
 

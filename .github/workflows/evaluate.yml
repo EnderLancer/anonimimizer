@@ -4,8 +4,8 @@
 #   Expected result ───────────────────────────┘               (person → data links from data/test/person_links.json)
 #
 #   ner      the Hugging Face model on CPU, 8 parallel shards of the test (once per run, not per mode)
-#   run.py   NER (model output from ner) + regex persons + rules (+ CRF in full mode), merging and pseudonyms.
-#            Mode model: the NER model only (ОСОБА), no regex persons, rules or CRF.
+#   run.py   NER (model output from ner) + regex persons + rules, merging and pseudonyms.
+#            Mode model: the NER model only (ОСОБА), no regex persons or rules.
 #            Reads only id and original from the test file, never the annotations.
 #
 # The model is the repository variable NER_MODEL (Settings → Secrets and variables → Actions → Variables), a HF repo org/name,
@@ -91,16 +91,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [model, regex, model_regex, full]
+        mode: [model, regex, model_regex]
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-
-      - name: Install dependencies
-        run: pip install python-crfsuite
 
       # NER model name for the step names and the summary, so a run shows which model produced the result
       - name: NER model

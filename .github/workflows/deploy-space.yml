@@ -96,7 +96,7 @@ jobs:
 
           text = ("Позивач Коваленко Марія Іванівна, РНОКПП 3112408765, "
                   "проживає за адресою: м. Київ, вул. Січових Стрільців, буд. 21, кв. 14.")
-          _, out, _, _ = Client(space).predict(text, "full", "spacy:dchaplinsky/uk_ner_web_trf_13class", "",
+          _, out, _, _ = Client(space).predict(text, "model_regex", "spacy:dchaplinsky/uk_ner_web_trf_13class", "",
                                               api_name="/pseudonymize")
           missing = [t for t in ("[ОСОБА_1]", "[НОМЕР_1]", "[АДРЕСА_1]") if t not in out]
           if missing:

@@ -13,7 +13,7 @@ sys.path.insert(0, os.getcwd())
 import ner_adapters as N  # noqa: E402
 
 DEFAULTS = {
-    "modes": "model,model_regex,full",
+    "modes": "model,model_regex",
     "shards": "8",
     "limit": "",
     "data": "data/test/court_cases.jsonl",
@@ -24,18 +24,18 @@ DEFAULTS = {
     "ner_options": "",
 }
 SCENARIOS = {
-    # три режими з моделлю на всьому тесті
+    # два режими з моделлю на всьому тесті
     "standard": {},
     # перевірити, що модель завантажується й дає розумний вихід: 20 документів, хвилини
-    "quick": {"modes": "model,full", "shards": "2", "limit": "20"},
+    "quick": {"shards": "2", "limit": "20"},
     # те саме, що standard, плюс базова лінія без моделі (regex)
-    "compare": {"modes": "regex,model,model_regex,full"},
+    "compare": {"modes": "regex,model,model_regex"},
     # швидший інференс: int8-квантизація (лише hf) і більше паралельних jobs
     "fast": {"shards": "16", "ner_options": "quantize=1"},
     # усі режими й cosine similarity
-    "thorough": {"modes": "regex,model,model_regex,full", "cosine": "1"},
+    "thorough": {"modes": "regex,model,model_regex", "cosine": "1"},
 }
-MODES = ("regex", "model", "model_regex", "full")
+MODES = ("regex", "model", "model_regex")
 
 
 def fail(msg):

@@ -1,7 +1,7 @@
 """Демо псевдонімізації українських судових рішень (Hugging Face Space).
 
 Текст ──► NER-модель (будь-яка: spacy / hf / gliner, див. ner_adapters.py) ──► мітки -> типи ──► складання частин
-     ──► regex-особи + правила (+ CRF у режимі full) ──► псевдоніми ОСОБА_1, АДРЕСА_1…
+     ──► regex-особи + правила ──► псевдоніми ОСОБА_1, АДРЕСА_1…
 
 У Space модулі пайплайну лежать поруч (їх копіює .github/scripts/build_space.sh), локально — на рівень вище:
 python space/app.py
@@ -32,8 +32,7 @@ PRESETS = [
     "hf:dslim/bert-base-NER?aggregation=first&min_score=0.6",
 ]
 MODES = {
-    "full": "3. Модель + правила + CRF (найкраще)",
-    "model_regex": "2. Модель + правила",
+    "model_regex": "2. Модель + правила (найкраще)",
     "regex": "1. Лише правила",
     "model": "0. Лише модель",
 }
@@ -42,8 +41,6 @@ MAX_CHARS = 60_000
 import ner_adapters as N  # noqa: E402
 import ner_postprocess as NP  # noqa: E402
 import run as R  # noqa: E402
-
-TAGGER = R.load_tagger()
 
 
 def resolve_spec(spec: str) -> str:
@@ -66,12 +63,12 @@ if spaces is not None:
         """ZeroGPU вимагає хоча б одну GPU-функцію; інференс іде на CPU, квоту не витрачаємо."""
 
 
-def pseudonymize(text: str, mode: str = "full", ner: str = DEFAULT_NER, labels: str = ""):
+def pseudonymize(text: str, mode: str = "model_regex", ner: str = DEFAULT_NER, labels: str = ""):
     """Псевдонімізує текст судового рішення.
 
     Args:
         text: текст документа українською.
-        mode: full | model_regex | regex | model.
+        mode: model_regex | regex | model.
         ner: NER-модель: spacy:<repo або шлях> | hf:<repo>[?опції] | gliner:<repo>[?опції].
         labels: відповідність міток моделі типам через пробіл, напр. "LOC=АДРЕСА @pii"; "МІТКА=" вимикає мітку.
 
@@ -96,7 +93,7 @@ def pseudonymize(text: str, mode: str = "full", ner: str = DEFAULT_NER, labels: 
             raise gr.Error(f"Не вдалося завантажити модель {ner}: {type(e).__name__}: {e}")
         raw = adapter.predict([text])[0]
     spans = NP.process(N.map_labels(raw, label_map), text)
-    ann = R.annotate(text, spans, mode, TAGGER)
+    ann = R.annotate(text, spans, mode)
 
     highlighted, out, pos = [], [], 0
     for a in ann:
@@ -126,7 +123,7 @@ EXAMPLES = [
 with gr.Blocks(title="Псевдонімізація судових рішень") as demo:
     gr.Markdown(
         "## Псевдонімізація українських судових рішень\n"
-        "Правила (regex) + NER-модель для ОСОБА + CRF для НОМЕР / ІНФОРМАЦІЯ / АДРЕСА. "
+        "NER-модель + правила (regex) для ОСОБА, НОМЕР / ІНФОРМАЦІЯ / АДРЕСА. "
         "Модель можна замінити на будь-яку з Hugging Face: `hf:` (token-classification), `gliner:` або `spacy:`. "
         "Код: [github.com/EnderLancer/anonimimizer](https://github.com/EnderLancer/anonimimizer)."
     )
@@ -134,7 +131,7 @@ with gr.Blocks(title="Псевдонімізація судових рішень
         with gr.Column(scale=3):
             text = gr.Textbox(label="Текст рішення", lines=14, max_lines=40)
             with gr.Row():
-                mode = gr.Radio([(v, k) for k, v in MODES.items()], value="full", label="Режим")
+                mode = gr.Radio([(v, k) for k, v in MODES.items()], value="model_regex", label="Режим")
             ner = gr.Dropdown(PRESETS, value=DEFAULT_NER, allow_custom_value=True, label="NER-модель",
                               info="тип:repo[?опції], напр. hf:org/model?aggregation=first&min_score=0.6. "
                                    "Перше завантаження нової моделі триває до кількох хвилин.")

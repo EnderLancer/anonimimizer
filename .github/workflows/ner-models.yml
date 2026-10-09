@@ -9,8 +9,8 @@
 #   summary:  зведена таблиця по режимах
 #
 # Сценарії (див. SCENARIOS у resolve_run.py):
-#   standard  model, model_regex, full на всьому тесті, 8 jobs інференсу
-#   quick     model і full на 20 документах, 2 jobs: чи модель узагалі працює
+#   standard  model, model_regex на всьому тесті, 8 jobs інференсу
+#   quick     model і model_regex на 20 документах, 2 jobs: чи модель узагалі працює
 #   compare   standard + regex як базова лінія без моделі
 #   fast      standard з int8-квантизацією (hf) і 16 jobs
 #   thorough  усі режими + cosine similarity
@@ -46,7 +46,7 @@ on:
         description: "Опції моделі: revision=v2&aggregation=first&min_score=0.6 | labels=person,address&threshold=0.4"
         default: ""
       overrides:
-        description: "Перекрити сценарій: limit=50 shards=4 modes=model,full fail_below=85 data=… extra_pip=\"…\""
+        description: "Перекрити сценарій: limit=50 shards=4 modes=model,model_regex fail_below=85 data=… extra_pip=\"…\""
         default: ""
 
 permissions:
@@ -253,14 +253,10 @@ jobs:
       - uses: astral-sh/setup-uv@v6
 
       - name: Install dependencies
-        env:
-          COSINE: ${{ needs.setup.outputs.cosine }}
+        if: needs.setup.outputs.cosine == 'true'
         run: |
-          uv pip install --system python-crfsuite
-          if [ "$COSINE" = "true" ]; then
-            uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
-            uv pip install --system sentence-transformers
-          fi
+          uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
+          uv pip install --system sentence-transformers
 
       - uses: actions/download-artifact@v7
         if: matrix.mode != 'regex'

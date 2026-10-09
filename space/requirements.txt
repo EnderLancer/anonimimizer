@@ -4,4 +4,3 @@ spacy-transformers>=1.3.9
 transformers>=4.51.3,<4.53.3   # перетин spacy-transformers 1.4 і gliner
 gliner
 sentencepiece
-python-crfsuite

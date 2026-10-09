@@ -16,7 +16,7 @@ models:
 
 # Псевдонімізація українських судових рішень
 
-Гібридне рішення: правила (regex) + NER-модель для ОСОБА + CRF для НОМЕР / ІНФОРМАЦІЯ / АДРЕСА.
+Гібридне рішення: NER-модель + правила (regex) для ОСОБА, НОМЕР / ІНФОРМАЦІЯ / АДРЕСА.
 Опис, метрики й код: [github.com/EnderLancer/anonimimizer](https://github.com/EnderLancer/anonimimizer).
 
 Space оновлюється автоматично з гілки `main` (GitHub Actions → **Deploy Space**); редагувати файли тут немає сенсу.
@@ -29,4 +29,4 @@ NER-модель задається в інтерфейсі рядком `тип
 
 Мітки моделі переводяться в типи полем «Мітки моделі -> типи» (`LOC=АДРЕСА`, `ORG=`, `@pii`).
 
-API: `gradio_client.Client("<space>").predict(text, "full", ner, labels, api_name="/pseudonymize")`.
+API: `gradio_client.Client("<space>").predict(text, "model_regex", ner, labels, api_name="/pseudonymize")`.
