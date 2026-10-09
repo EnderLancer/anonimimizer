@@ -101,7 +101,7 @@ Actions → **NER model evaluation** → Run workflow (`.github/workflows/ner-mo
 | `HF_SPACE_TOKEN` | секрет | write-токен цього акаунта Hugging Face |
 | `HF_SPACE_HARDWARE` | змінна, необов'язково | залізо нового Space, за замовчуванням `zero-a10g` (ZeroGPU) |
 
-Gradio-Space на безкоштовному акаунті можливий лише на ZeroGPU і лише для акаунта, старшого за 30 днів; інакше потрібен PRO. Інференс іде на CPU, тож квоту ZeroGPU демо не витрачає.
+Gradio-Space на безкоштовному акаунті можливий лише на ZeroGPU і лише для акаунта, старшого за 30 днів; інакше потрібен PRO. Інференс іде на CPU, тож квоту ZeroGPU демо не витрачає. Що ще треба зробити, щоб запустити Space, і відомі ризики: [`space/NEXT_STEPS.md`](space/NEXT_STEPS.md).
 
 ## Як це працює
 
