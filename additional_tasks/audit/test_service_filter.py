@@ -221,6 +221,83 @@ class ServiceFilterTests(unittest.TestCase):
         self.assertTrue(detect("Телефон канцелярії: +380501234567", ["+380501234567"], "НОМЕР")[0]["excluded"])
         self.assertFalse(detect("Телефон адвоката: +380501234567", ["+380501234567"], "НОМЕР")[0]["excluded"])
 
+    def test_service_number_categories_and_layout(self):
+        examples = (
+            ("Справа № 123/456/24-к", "123/456/24-к", "Номер судової справи"),
+            ("у справі\n№\u00a0123/456/24", "123/456/24", "Номер судової справи"),
+            ("Судове провадження № 123456", "123456", "Номер судового провадження"),
+            ("Провадження № 2-кп/123/456/24", "2-кп/123/456/24", "Номер судового провадження"),
+            ("Наказ № 123456", "123456", "Номер ухвали, постанови або наказу"),
+            ("Ухвала № 123456", "123456", "Номер ухвали, постанови або наказу"),
+            ("Постанова\n№ 123456", "123456", "Номер ухвали, постанови або наказу"),
+            ("Тел. суду: (044) 123-45-67", "(044) 123-45-67", "Телефон або факс установи за явним контекстом"),
+            ("Факс прокуратури: 044 123 45 67", "044 123 45 67", "Телефон або факс установи за явним контекстом"),
+        )
+        for text, value, reason in examples:
+            with self.subTest(text=text):
+                c = detect(text, [value], "НОМЕР")[0]
+                self.assertTrue(c["excluded"])
+                self.assertEqual(c["exclusion_reason"], reason)
+                self.assertEqual(text[c["start"]:c["end"]], value)
+
+    def test_private_and_ambiguous_numbers_remain_visible(self):
+        examples = (
+            ("РНОКПП: 1234567890", "1234567890"),
+            ("Паспорт: АА123456", "АА123456"),
+            ("Картка: 1234 5678 9012 3456", "1234 5678 9012 3456"),
+            ("VIN: ABC12345678901234", "ABC12345678901234"),
+            ("IMEI: 123456789012345", "123456789012345"),
+            ("ДНЗ: АА1234ВВ", "АА1234ВВ"),
+            ("Виконавче провадження № 123/456/24", "123/456/24"),
+            ("ВП № 12345678", "12345678"),
+            ("Кримінальне провадження № 123/456/24", "123/456/24"),
+            ("Провадження № 12345678", "12345678"),
+            ("Кадастровий номер: 1234567890:12:345:6789", "1234567890:12:345:6789"),
+            ("Договір № 123456", "123456"),
+            ("Номер запису № 123456", "123456"),
+            ("Квитанція № 123456", "123456"),
+            ("Суд повідомив телефон позивача: +380501234567", "+380501234567"),
+            ("Справа № НОМЕР_1. РНОКПП: 1234567890", "1234567890"),
+            ("Справа № 123/456/24. 1234567890", "1234567890"),
+            ("Справа. № 123456", "123456"),
+            ("Справжній номер: 123456", "123456"),
+            ("Справа 12.10.2024", "12"),
+        )
+        for text, value in examples:
+            with self.subTest(text=text):
+                self.assertFalse(detect(text, [value], "НОМЕР")[0]["excluded"])
+
+    def test_number_fragments_and_repeats_are_occurrence_local(self):
+        text = "Справа № 1234567890. РНОКПП: 1234567890."
+        spans = []
+        for start, end in ((text.index("1234567890"), text.index("1234567890") + 10),
+                           (text.index("1234567890") + 2, text.index("1234567890") + 6),
+                           (text.rindex("1234567890"), text.rindex("1234567890") + 10)):
+            spans.append({"start": start, "end": end, "value": text[start:end], "type": "НОМЕР"})
+        self.assertEqual([c["excluded"] for c in mark_service_candidates(text, spans)], [True, True, False])
+
+    def test_crossing_number_candidate_is_not_excluded(self):
+        text = "Справа № 123456, паспорт АА123456"
+        self.assertFalse(detect(text, ["123456, паспорт АА123456"], "НОМЕР")[0]["excluded"])
+
+    def test_treasury_account_partial_ner_and_personal_account(self):
+        account = "UA12" + "899998" + "0" * 19
+        text = "Рахунок: " + account
+        self.assertTrue(detect(text, [account[8:18]], "НОМЕР")[0]["excluded"])
+        spaced = " ".join((account[:4], account[4:10], account[10:]))
+        self.assertTrue(detect(spaced, [spaced], "НОМЕР")[0]["excluded"])
+        self.assertTrue(detect("Рахунок – " + account + "Отримувач: Казначейство", [account], "НОМЕР")[0]["excluded"])
+        self.assertFalse(detect(account + "1", [account], "НОМЕР")[0]["excluded"])
+        personal = "UA12" + "300001" + "0" * 19
+        self.assertFalse(detect("Суд повідомив IBAN: " + personal, [personal], "НОМЕР")[0]["excluded"])
+
+    def test_audit_filters_partial_ner_number_after_collection(self):
+        text = "Справа № 123/456/24. РНОКПП: 1234567890"
+        s = text.index("456")
+        result = candidates(text, ner=[EntitySpan(s, s + 3, "456", "НОМЕР", 0.99)])
+        self.assertTrue(next(c for c in result if c["sources"] == ["ner"])["excluded"])
+        self.assertFalse(next(c for c in result if c["value"] == "1234567890")["excluded"])
+
     def test_report_contains_exclusions_and_safe_json(self):
         text = "Суддя Петренко І. П. </script>"
         result = candidates(text)

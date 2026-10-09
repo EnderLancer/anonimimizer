@@ -4,6 +4,66 @@ from urllib.parse import urlsplit
 
 import predict_trf as P
 
+SERVICE_FILTER_VERSION = 4
+
+# Match labels and complete values in the original text, independently of
+# detector boundaries. NER may return only a fragment of the full number.
+NUMBER_VALUE = r"[A-ZА-ЯІЇЄҐ]{0,3}\d+(?:[/-][A-ZА-ЯІЇЄҐа-яіїєґ\d]+)*"
+NUMBER_SEPARATOR = r"\s*(?:[:№N]|номер\w*)?\s*"
+CASE_NUMBER = re.compile(
+    rf"\bсправ(?:а|и|і|у|ою|ам|ами|ах)?{NUMBER_SEPARATOR}"
+    rf"(?P<value>{NUMBER_VALUE})(?!\w|[/\d-]|[.:]\d)", re.I)
+COURT_PROCEEDING = re.compile(
+    rf"\b(?:судов\w+\s+проваджен\w*{NUMBER_SEPARATOR}|"
+    rf"проваджен\w*{NUMBER_SEPARATOR}(?=\d+[/-]))"
+    rf"(?P<value>{NUMBER_VALUE})(?!\w|[/\d-]|[.:]\d)", re.I)
+DOCUMENT_NUMBER = re.compile(
+    rf"\b(?:ухвал\w*|постанов\w*|наказ\w*)\s*№\s*"
+    rf"(?P<value>{NUMBER_VALUE})(?!\w|[/\d-]|[.:]\d)", re.I)
+INSTITUTION_PHONE = re.compile(
+    r"\b(?:телефон\w*|тел\.|факс|fax)\s+"
+    r"(?:суду|канцелярії|прокуратури|нотаріальної\s+контори)\s*[:—–-]?\s*"
+    r"(?P<value>\+?\(?\d[\d\s().-]{5,}\d)(?!\d)", re.I)
+# Some published payment blocks concatenate the IBAN and the next Ukrainian
+# field label without whitespace. Still reject longer Latin/digit identifiers.
+TREASURY_ACCOUNT = re.compile(r"(?<![A-Z\d])(?P<value>UA\d{2}(?:\s?\d){25})(?![A-Z\d])", re.I)
+PRIVATE_NUMBER = re.compile(
+    rf"\b(?:РНОКПП|ІПН|паспорт\w*|VIN|IMEI|ІМЕІ|"
+    rf"(?:виконавч\w+|кримінальн\w+|досудов\w+)\s+проваджен\w*|ВП|кадастров\w+\s+номер\w*|"
+    rf"номер\w*\s+запис\w*|договор\w*|контракт\w*|квитанці\w*)"
+    rf"{NUMBER_SEPARATOR}(?P<value>{NUMBER_VALUE})(?!\w|[/\d-])", re.I)
+
+
+def service_number_regions(text):
+    """Only explicit labels prove a service category; proximity does not."""
+    regions = []
+    for pattern, reason in (
+        (CASE_NUMBER, "Номер судової справи"),
+        (COURT_PROCEEDING, "Номер судового провадження"),
+        (DOCUMENT_NUMBER, "Номер ухвали, постанови або наказу"),
+        (INSTITUTION_PHONE, "Телефон або факс установи за явним контекстом"),
+        (TREASURY_ACCOUNT, "Рахунок казначейства (код банку 899998)"),
+    ):
+        for match in pattern.finditer(text):
+            value = match.group("value")
+            if pattern is TREASURY_ACCOUNT and not P.treasury_iban(value):
+                continue
+            if pattern is INSTITUTION_PHONE and not 7 <= len(re.sub(r"\D", "", value)) <= 12:
+                continue
+            regions.append((*match.span("value"), reason))
+    return regions
+
+
+def service_number_reason(text, start, end, regions=None, protected=None):
+    """Classify an occurrence; ambiguous or crossing fragments stay visible."""
+    if protected is None:
+        protected = [m.span("value") for m in PRIVATE_NUMBER.finditer(text)]
+    if any(a < end and start < b for a, b in protected):
+        return None
+    if regions is None:
+        regions = service_number_regions(text)
+    return next((reason for a, b, reason in regions if a <= start < end <= b), None)
+
 ROLES = re.compile(
     r"\b(?:(?P<judge>суддя-доповідач\w*|судд[яіюеївямх]*|головуюч\w*)|"
     r"(?P<lawyer>адвокат\w*|захисник\w*)|(?P<notary>нотаріус\w*)|"
@@ -150,6 +210,8 @@ def mark_service_candidates(text, candidates):
     """Keep every candidate; attach exclusions without changing detector spans."""
     addresses = [c for c in candidates if c["type"] == "АДРЕСА"]
     people = [c for c in candidates if c["type"] == "ОСОБА"]
+    number_regions = service_number_regions(text)
+    protected_numbers = [m.span("value") for m in PRIVATE_NUMBER.finditer(text)]
     address_reasons = {(c["start"], c["end"]): reason for c in addresses
                        if (reason := service_address_reason(text, c["start"], c["end"], addresses, people))}
     # Prefer full names to overlapping NER fragments for context association.
@@ -226,13 +288,9 @@ def mark_service_candidates(text, candidates):
             if reason:
                 c.update(excluded=True, exclusion_reason=reason)
         elif kind == "НОМЕР":
-            compact = re.sub(r"\s", "", value)
-            if re.fullmatch(r"UA\d{27}", compact, re.I) and P.treasury_iban(compact):
-                c.update(excluded=True, exclusion_reason="Рахунок казначейства (код банку 899998)")
-            elif P.NUM_NEG.search(pre[-70:]):
-                c.update(excluded=True, exclusion_reason="Неособистий номер за контекстом документа")
-            elif CONTACT.search(pre) and not P.PERSONAL_CTX.search(pre):
-                c.update(excluded=True, exclusion_reason="Контакт установи за явним контекстом")
+            reason = service_number_reason(text, s, e, number_regions, protected_numbers)
+            if reason:
+                c.update(excluded=True, exclusion_reason=reason)
         elif kind == "ІНФОРМАЦІЯ":
             # Exact host boundaries prevent court.gov.ua.evil.example matches.
             url = value.rstrip(".,;)")
