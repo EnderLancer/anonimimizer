@@ -13,25 +13,33 @@ python run.py cases.jsonl out.jsonl --ner "hf:dslim/bert-base-NER?aggregation=fi
 import argparse, json, os
 import predict_trf as P
 import ner_adapters as N
+import ner_postprocess as NP
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_NER = "spacy:" + P.MODEL
 
 
 def ner_spans(rows, spec=DEFAULT_NER, label_map=None):
-    """Фрагменти моделі, зведені до типів челенджу; результат кешується (для моделі за замовчуванням — у ner_cache.json)."""
+    """Сутності моделі для кожного документа: інференс (кешується; для моделі за замовчуванням — у ner_cache.json)
+    ──► мітки моделі -> типи челенджу (ner_adapters) ──► складання частин сутностей (ner_postprocess)."""
     raw = N.run_ner(rows, spec, N.cache_path(spec, DEFAULT_NER, P.CACHE))
-    return {k: N.map_labels(v, label_map) for k, v in raw.items()}
+    return {str(r["id"]): NP.process(N.map_labels(raw[str(r["id"])], label_map), r["original"]) for r in rows}
 
 
 def parse_label_map(items):
-    """["LOC=АДРЕСА", "ORG="] -> DEFAULT_LABEL_MAP з доповненнями; порожнє значення вимикає мітку."""
+    """["@pii", "LOC=АДРЕСА", "ORG="] -> DEFAULT_LABEL_MAP з доповненнями; @назва — набір з N.LABEL_PRESETS,
+    порожнє значення вимикає мітку."""
     m = dict(N.DEFAULT_LABEL_MAP)
     for it in items:
+        if it.startswith("@"):
+            if it[1:] not in N.LABEL_PRESETS:
+                raise SystemExit(f"--ner-label {it}: невідомий набір; доступні: {', '.join('@' + k for k in N.LABEL_PRESETS)}")
+            m.update(N.LABEL_PRESETS[it[1:]])
+            continue
         k, _, v = it.partition("=")
         v = v.strip().upper().replace("I", "І")
-        if v and v not in N.TYPES:
-            raise SystemExit(f"--ner-label {it}: тип має бути одним із {', '.join(N.TYPES)}")
+        if v and v.rstrip("*") not in N.TYPES:
+            raise SystemExit(f"--ner-label {it}: тип має бути одним із {', '.join(N.TYPES)} (з * — лише як частина сусіднього)")
         m[k.strip().upper()] = v or None
     return m
 
@@ -42,7 +50,8 @@ def main():
     ap.add_argument("--mode", choices=["model", "regex", "model_regex", "full"], default="full")
     ap.add_argument("--ner", default=DEFAULT_NER, help="NER-модель: spacy:<шлях> | hf:<repo>[?опції] | gliner:<repo>[?опції]")
     ap.add_argument("--ner-label", action="append", default=[], metavar="МІТКА=ТИП",
-                    help="відповідність мітки моделі типу челенджу, напр. LOC=АДРЕСА; МІТКА= вимикає мітку")
+                    help="відповідність мітки моделі типу челенджу, напр. LOC=АДРЕСА; МІТКА= вимикає мітку; "
+                         "@pii — набір міток PII-моделей (адреси, номери, дата народження, email)")
     a = ap.parse_args()
     rows = [json.loads(l) for l in open(a.src, encoding="utf8")]
     from regex_persons import persons as rx_persons

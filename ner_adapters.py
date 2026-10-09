@@ -27,8 +27,29 @@ from urllib.parse import parse_qsl
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TYPES = ("ОСОБА", "АДРЕСА", "НОМЕР", "ІНФОРМАЦІЯ")
-# сирі мітки (після upper() і без BIO-префікса) -> тип; мітки, яких тут немає, відкидаються
-DEFAULT_LABEL_MAP = {"PERS": "ОСОБА", "PER": "ОСОБА", "PERSON": "ОСОБА"}
+# сирі мітки (після upper() і без BIO-префікса) -> тип; мітки, яких тут немає, відкидаються.
+# Окрім класичних NER-міток — імена з PII-моделей, які ділять ім'я на частини (напр. Wismut/nym-pii-multilingual:
+# GIVEN_NAME/SURNAME; на тесті 98–99% таких фрагментів — gold ОСОБА). Решту PII-міток (DATE, CITY, COMPANY_NAME…)
+# розмітка челенджу здебільшого не маскує, тож їх вмикають явно через --ner-label.
+DEFAULT_LABEL_MAP = {
+    **dict.fromkeys(("PERS", "PER", "PERSON"), "ОСОБА"),
+    **dict.fromkeys(("GIVEN_NAME", "GIVENNAME", "FIRST_NAME", "FIRSTNAME", "MIDDLE_NAME", "MIDDLENAME", "SURNAME",
+                     "LAST_NAME", "LASTNAME", "FAMILY_NAME", "NAME", "FULL_NAME", "FULLNAME", "NAME_STUDENT"), "ОСОБА"),
+}
+# Набори міток, які вмикаються одним --ner-label @назва. "pii": інші типи PII-моделей (Wismut/nym-pii-multilingual,
+# piiranha тощо). Тип із * — слабка частина (див. ner_postprocess): місто чи область лише в складі адреси.
+LABEL_PRESETS = {
+    "pii": {
+        **dict.fromkeys(("STREET_ADDRESS", "STREET_NAME", "STREET", "ADDRESS"), "АДРЕСА"),
+        **dict.fromkeys(("BUILDING_NUMBER", "BUILDINGNUM", "SECONDARY_ADDRESS", "CITY", "STATE", "ZIP_CODE", "ZIPCODE",
+                         "COUNTRY"), "АДРЕСА*"),
+        **dict.fromkeys(("PASSPORT", "DRIVERS_LICENSE", "DRIVERLICENSENUM", "TAX_ID", "TAXNUM", "SSN", "SOCIALNUM",
+                         "GOVERNMENT_ID", "IDCARDNUM", "IBAN", "CREDIT_DEBIT_CARD", "CREDITCARDNUMBER", "ACCOUNT_NUMBER",
+                         "ACCOUNTNUM", "ROUTING_NUMBER", "SWIFT_BIC", "PHONE", "TELEPHONENUM", "FAX_NUMBER",
+                         "LICENSE_PLATE", "CUSTOMER_ID", "EMPLOYEE_ID", "MEDICAL_RECORD_NUMBER"), "НОМЕР"),
+        **dict.fromkeys(("DATE_OF_BIRTH", "DATEOFBIRTH", "EMAIL", "URL", "USERNAME"), "ІНФОРМАЦІЯ"),
+    },
+}
 BIO = re.compile(r"^[BIESLU]-", re.I)
 
 
@@ -79,7 +100,7 @@ def normalize(text: str, raw, expand_words: bool = True, min_score: float = 0.0,
     merged: list[list] = []
     for it in items:
         last = merged[-1] if merged else None
-        if last and last[2] == it[2] and (it[0] <= last[1] or join_spaces and re.fullmatch(r"[ 	 ]+", text[last[1]:it[0]])):
+        if last and last[2] == it[2] and (it[0] <= last[1] or join_spaces and re.fullmatch(r"[ \t\xa0]+", text[last[1]:it[0]])):
             last[1], last[3] = max(last[1], it[1]), max(last[3], it[3])
         else:
             merged.append(it)
@@ -87,14 +108,10 @@ def normalize(text: str, raw, expand_words: bool = True, min_score: float = 0.0,
 
 
 def map_labels(spans: list[EntitySpan], label_map: dict[str, str | None] | None = None) -> list[EntitySpan]:
-    """Сирі мітки -> типи челенджу. Мітка без відповідності (або з порожнім значенням) відкидається."""
+    """Сирі мітки -> типи челенджу (з * — «слабка» частина, див. ner_postprocess.assemble). Мітка без
+    відповідності (або з порожнім значенням) відкидається. Лише заміна мітки: обробку даних робить ner_postprocess."""
     label_map = DEFAULT_LABEL_MAP if label_map is None else label_map
-    out = []
-    for sp in spans:
-        t = label_map.get(sp.label.upper())
-        if t:
-            out.append(replace(sp, label=t))
-    return out
+    return [replace(sp, label=t) for sp in spans if (t := label_map.get(sp.label.upper()))]
 
 
 def windows(text: str, max_chars: int, overlap: int):
