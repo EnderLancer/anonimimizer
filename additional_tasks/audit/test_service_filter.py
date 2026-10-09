@@ -19,6 +19,39 @@ def detect(text, values, kind="ОСОБА"):
 
 
 class ServiceFilterTests(unittest.TestCase):
+    def test_judge_with_latin_lookalike_preserves_offsets(self):
+        name = "С.Т.Філатова"
+        for prefix in ("", "м. Київ. Кам’янський суд.\n"):
+            text = prefix + "Cуддя" + " " * 81 + name
+            with self.subTest(prefix=prefix):
+                candidate = detect(text, [name])[0]
+                self.assertTrue(candidate["excluded"])
+                self.assertEqual(candidate["role"], "суддя")
+                self.assertEqual(text[candidate["start"]:candidate["end"]], name)
+        text = "Відповідач — Cуддя " + name
+        self.assertFalse(detect(text, [name])[0]["excluded"])
+
+    def test_judge_with_court_chamber_description(self):
+        name = "Борисової О.В."
+        prefix = "Київський апеляційний суд в складі судді "
+        chamber = "судової палати з розгляду цивільних справ "
+        for description in (chamber, chamber.replace(" ", "\n  ")):
+            text = prefix + description + name + ","
+            with self.subTest(description=description):
+                candidate = detect(text, [name])[0]
+                self.assertTrue(candidate["excluded"])
+                self.assertEqual(candidate["role"], "суддя")
+                self.assertEqual(text[candidate["start"]:candidate["end"]], name)
+                self.assertTrue(detect(text, ["Борисової"])[0]["excluded"])
+        for prose in ("заслухав пояснення ", "повідомив про ", "Свідок "):
+            text = prefix + chamber + prose + name
+            with self.subTest(prose=prose):
+                self.assertFalse(detect(text, [name])[0]["excluded"])
+        for party in ("Позивач", "Відповідач", "Свідок"):
+            text = party + " — суддя " + chamber + name
+            with self.subTest(party=party):
+                self.assertFalse(detect(text, [name])[0]["excluded"])
+
     def test_roles_and_forms(self):
         for role in ("суддя", "суддя-доповідач", "головуючого судді", "адвокатом", "приватним нотаріусом",
                      "прокурора", "секретарем судового засідання"):

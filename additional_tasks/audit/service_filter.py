@@ -5,7 +5,7 @@ from urllib.parse import urlsplit
 import predict_trf as P
 from regex_persons import persons
 
-SERVICE_FILTER_VERSION = 13
+SERVICE_FILTER_VERSION = 15
 
 # Match labels and complete values in the original text, independently of
 # detector boundaries. NER may return only a fragment of the full number.
@@ -147,6 +147,10 @@ COURT_ROLE_GAP = re.compile(
     r"(?i:суду)"
     rf"(?:\s+(?:{COURT_GEOGRAPHY}\s+){{1,2}}(?i:області)|\s+(?i:України))?"
     r"[\s,:()—–-]*")
+COURT_CHAMBER_GAP = re.compile(
+    r"[\s,:()—–-]+судової\s+палати\s+з\s+розгляду\s+"
+    r"(?:цивільних|кримінальних|адміністративних|господарських)\s+справ\s*",
+    re.I)
 SUFFIX_GAP = re.compile(r"[\s,():—–-]*(?:(?:приватн\w*|державн\w*)\s+)?", re.I)
 LIST_GAP = re.compile(r"\s*[,;]\s*(?:(?:та|і)\s+)?", re.I)
 TOKENS = re.compile(r"[^\W\d_]+", re.U)
@@ -467,9 +471,13 @@ def name_key(value):
     return tuple(TOKENS.findall(value.casefold().replace("’", "'").replace("ʼ", "'")))
 
 
+ROLE_LOOKALIKES = str.maketrans("iIpPcCoOaAeExX", "іІрРсСоОаАеЕхХ")
+
+
 def normalize_role_context(value):
     """Normalize a copy only: candidate offsets always refer to original text."""
     value = re.sub(r"(?<=\w)['`’ʼ](?=\w)", "", value.replace("|", " "))
+    value = value.translate(ROLE_LOOKALIKES)
     return re.sub(r"\bм\.\s*", "м ", value, flags=re.I)
 
 
@@ -508,7 +516,9 @@ def participant_context(text, start, anchors):
         # Professional titles do not make a participant's name service data.
         # Reuse role_gap to accept line breaks, cities and table separators,
         # while rejecting unrelated prose between the title and the name.
-        if len(gap) <= 200 and role_gap(ROLES.sub("", gap)):
+        participant_gap = ROLES.sub("", gap)
+        if len(gap) <= 200 and (role_gap(participant_gap)
+                               or COURT_CHAMBER_GAP.fullmatch(participant_gap)):
             return True
     return False
 
@@ -547,7 +557,9 @@ def mark_service_candidates(text, candidates):
         if not any(c["start"] < a["end"] and a["start"] < c["end"] for a in anchors):
             anchors.append(c)
     anchors.sort(key=lambda c: c["start"])
-    roles = list(ROLES.finditer(text))
+    # Character-for-character replacement preserves original match offsets.
+    # normalize_role_context also removes characters, so it cannot be used here.
+    roles = list(ROLES.finditer(text.translate(ROLE_LOOKALIKES)))
     direct, ambiguous, participants = {}, set(), []
     role_regions = []
     previous = None
@@ -571,7 +583,8 @@ def mark_service_candidates(text, candidates):
             # participant_context has already protected the reverse order.
             if m.lastgroup == "lawyer":
                 gap = PARTY.sub("", gap)
-            if role_gap(gap):
+            if (role_gap(gap) or (m.lastgroup == "judge"
+                                 and COURT_CHAMBER_GAP.fullmatch(normalize_role_context(gap)))):
                 # Never attach a role across another detected person.
                 if not any(m.end() <= a["start"] < s for a in anchors):
                     role = m.lastgroup
