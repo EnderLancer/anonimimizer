@@ -1,7 +1,7 @@
 # Evaluation pipeline:
 #   Test data ──► run.py --mode <mode> ──► data/evaluate.py ──► result %
-#                                              ▲
-#   Expected result ───────────────────────────┘
+#                                              ▲         └──► data/evaluate_risk.py ──► deanonymization risk
+#   Expected result ───────────────────────────┘               (person → data links from data/test/person_links.json)
 #
 #   run.py   NER (з ner_cache.json) + regex-особи + правила (+ CRF у режимі full), злиття і псевдоніми.
 #            Режим model: лише NER-модель (ОСОБА), без regex-осіб, правил і CRF.
@@ -88,6 +88,11 @@ jobs:
           python data/evaluate.py "$TEST_DATA" out/submission.jsonl --json > out/result.json
           python data/evaluate.py "$FIXED_DATA" out/submission.jsonl --json > out/result_fixed.json
 
+      # full deanonymization risk: a person is protected only if every mention of their name
+      # and every number, address and date linked to them is pseudonymized
+      - name: Deanonymization risk
+        run: python data/evaluate_risk.py "$TEST_DATA" out/submission.jsonl --json > out/risk.json
+
       - name: "Result %: ${{ steps.ner.outputs.model }}"
         env:
           MIN_SCORE: ${{ inputs.min_score || vars.MIN_SCORE }}
@@ -99,6 +104,8 @@ jobs:
             echo "Original gold \`$TEST_DATA\`"
             echo '```'
             report out/result.json
+            echo
+            python -c 'import json, sys; sys.path.insert(0, "data"); import evaluate_risk; evaluate_risk.print_report(json.load(open("out/risk.json", encoding="utf8")))'
             echo '```'
             echo "<details><summary>Corrected gold <code>$FIXED_DATA</code></summary>"
             echo
@@ -131,4 +138,5 @@ jobs:
             out/submission.jsonl
             out/result.json
             out/result_fixed.json
+            out/risk.json
           if-no-files-found: ignore
