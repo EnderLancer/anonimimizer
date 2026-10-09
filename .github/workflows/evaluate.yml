@@ -36,6 +36,9 @@ env:
   # той самий тест з виправленою розміткою (ті самі id і тексти; причини — fix_reasons_for_court_cases.jsonl):
   # той самий вихід run.py оцінюється ще й проти нього; поріг min_score — за офіційним TEST_DATA
   FIXED_DATA: data/test/court_cases_fixed.jsonl
+  # ті самі виправлення, але державні органи замасковані, як в офіційній розмітці: відокремлює внесок
+  # рішення «не маскувати держоргани» від решти виправлень
+  FIXED_SB_DATA: data/test/court_cases_fixed_keep_state_bodies.jsonl
 
 jobs:
   evaluate:
@@ -76,6 +79,7 @@ jobs:
         run: |
           python data/evaluate.py "$TEST_DATA" out/submission.jsonl --json > out/result.json
           python data/evaluate.py "$FIXED_DATA" out/submission.jsonl --json > out/result_fixed.json
+          python data/evaluate.py "$FIXED_SB_DATA" out/submission.jsonl --json > out/result_fixed_sb.json
 
       - name: Result %
         env:
@@ -94,12 +98,19 @@ jobs:
             report out/result_fixed.json
             echo '```'
             echo '</details>'
+            echo "<details><summary>Corrected gold, state bodies masked <code>$FIXED_SB_DATA</code></summary>"
+            echo
+            echo '```'
+            report out/result_fixed_sb.json
+            echo '```'
+            echo '</details>'
           } | tee -a "$GITHUB_STEP_SUMMARY"
           python - <<'EOF'
           import json, os, sys
           score = 100 * json.load(open("out/result.json", encoding="utf8"))["final_score"]
           fixed = 100 * json.load(open("out/result_fixed.json", encoding="utf8"))["final_score"]
-          print(f"Score: {score:.2f}% (corrected gold: {fixed:.2f}%)")
+          fixed_sb = 100 * json.load(open("out/result_fixed_sb.json", encoding="utf8"))["final_score"]
+          print(f"Score: {score:.2f}% (corrected gold: {fixed:.2f}%, corrected with state bodies masked: {fixed_sb:.2f}%)")
           m = os.environ.get("MIN_SCORE")
           if m and score < float(m):
               sys.exit(f"Score {score:.2f}% is below the threshold {float(m):.2f}%")
@@ -119,4 +130,5 @@ jobs:
             out/submission.jsonl
             out/result.json
             out/result_fixed.json
+            out/result_fixed_sb.json
           if-no-files-found: ignore

@@ -139,6 +139,7 @@ The other 6.6 points (state bodies, companies, «Військова частин
 Two data files, edited by hand-reviewed corrections (no code in the project patches the gold):
 
 - `data/test/court_cases_fixed.jsonl` — all 240 test documents in the original schema, with the **30 documents whose gold annotation is wrong** replaced by corrected copies (`annotations`, `annotations_by_pseudonym` and `pseudonymized` consistent with each other). It is a drop-in replacement for `court_cases.jsonl`: same ids, same texts.
+- `data/test/court_cases_fixed_keep_state_bodies.jsonl` — the same corrections **except** the `unmask` row below: the 68 state-body mentions stay masked exactly as in the official gold (spans and labels identical to `court_cases.jsonl`). Comparing it with the two other files separates the gain from fixing annotation errors from the gain from the state-body decision.
 - `data/test/fix_reasons_for_court_cases.jsonl` — only those 30 corrected documents (one JSON object per line), each with an extra `corrections` list: `action`, `before`, `after`, `description` (why it is wrong) and `legal_reference` (ст. 7 Закону «Про доступ до судових рішень» and/or the ДСА codifier № 59; texts in `legal/`).
 
 | action | fixes | mentions | what |
@@ -155,14 +156,16 @@ The first 18 documents also had 1–8 labels with stray whitespace («ОСОБА
 
 **State bodies.** Article 7 and codifier п. 5 protect information that identifies a *natural person*; a state body is not one, and the official gold itself leaves the same bodies open in other documents (54 masked vs 64 open in our run). So in the corrected gold they are not masked. The trade name of a sole proprietor («ФОП Бондар І. Л. «Експрес-Сервіс»») stays masked: it points to a natural person.
 
-The pipeline follows the same rule for any dataset: it never masks state bodies (rules `ORG_GOV` / `ORG_MIL` in `predict_trf.py` only find them, so ІНФОРМАЦІЯ candidates from rules, the model or the CRF that hit one are dropped). CI scores the same run against both gold files.
+The pipeline follows the same rule for any dataset: it never masks state bodies (rules `ORG_GOV` / `ORG_MIL` in `predict_trf.py` only find them, so ІНФОРМАЦІЯ candidates from rules, the model or the CRF that hit one are dropped). CI scores the same run against all three gold files.
 
-| mode | corrected gold | official gold |
-|---|---|---|
-| model | .2465 | .2459 |
-| regex | .9498 | .8736 |
-| model_regex | .9525 | .8760 |
-| full | **.9586** (ІНФОРМАЦІЯ F1 .904) | .8816 |
+| mode | official gold | corrected, state bodies masked | corrected |
+|---|---|---|---|
+| model | .2459 | .2465 | .2465 |
+| regex | .8736 | .8876 | .9498 |
+| model_regex | .8760 | .8902 | .9525 |
+| full | .8816 (ІНФОРМАЦІЯ F1 .605) | .8959 (.653) | **.9586** (.904) |
+
+For `full`, fixing annotation errors is worth +.014; not masking state bodies in the gold is worth another +.063.
 
 Before this change (state bodies masked when a party, as in the official gold) `full` scored .9173 on the official gold and .8620 on the corrected one.
 
