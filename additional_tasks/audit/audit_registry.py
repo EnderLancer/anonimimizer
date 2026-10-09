@@ -103,6 +103,18 @@ def candidates(text, tagger=None, ner=(), mode=None):
     return mark_service_candidates(text, result)
 
 
+def unique_entity_counts(candidates):
+    """Count production pseudonyms within one document after service exclusions.
+
+    Raw diagnostic detections have no production identity; return None rather
+    than presenting mention counts as unique entities.
+    """
+    if any("pseudonym" not in c for c in candidates):
+        return None
+    identities = {(c["type"], c["pseudonym"]) for c in candidates if not c["excluded"]}
+    return dict(Counter(kind for kind, _ in identities))
+
+
 def write_report(path, payload):
     template = (HERE / "audit_review.html").read_text(encoding="utf8")
     # Keep arbitrary decision text inert inside the embedded JSON script.
@@ -147,6 +159,7 @@ def main():
         raw = N.run_ner(keyed, spec, str(args.out / "ner_cache.json"))
         ner = {r["source_row"]: NP.process(N.map_labels(raw[k["id"]]), r["text"]) for r, k in zip(rows, keyed)}
     counts, excluded_counts, exclusion_reasons = Counter(), Counter(), Counter()
+    unique_counts = Counter()
     with (args.out / "candidates.jsonl").open("w", encoding="utf8") as output:
         for i, row in enumerate(rows, 1):
             if args.candidate_source == "raw":
@@ -160,6 +173,9 @@ def main():
                     exclusion_reasons[candidate["exclusion_reason"]] += 1
                 else:
                     counts[candidate["type"]] += 1
+            row["unique_counts"] = unique_entity_counts(row["candidates"]) if args.candidate_source == "pipeline" else None
+            if row["unique_counts"] is not None:
+                unique_counts.update(row["unique_counts"])
             output.write(json.dumps(row, ensure_ascii=False) + "\n")
             if i % 25 == 0 or i == len(rows):
                 print(f"Processed {i}/{len(rows)}; candidates={sum(counts.values())}; excluded={sum(excluded_counts.values())}", flush=True)
@@ -168,6 +184,8 @@ def main():
                 "candidate_source": args.candidate_source,
                 "seed": args.seed, "selected": len(rows), "total": total, "text_column": column,
                 "counts": dict(counts), "excluded_counts": dict(excluded_counts),
+                "unique_counts": dict(unique_counts) if args.candidate_source == "pipeline" else None,
+                "unique_count_scope": "document",
                 "exclusion_reasons": dict(exclusion_reasons), "service_filter_version": SERVICE_FILTER_VERSION,
                 "documents_with_candidates": sum(any(not c["excluded"] for c in r["candidates"]) for r in rows),
                 "documents_with_raw_candidates": sum(bool(r["candidates"]) for r in rows)}
