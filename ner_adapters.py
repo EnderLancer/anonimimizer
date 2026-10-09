@@ -32,6 +32,7 @@ TYPES = ("ОСОБА", "АДРЕСА", "НОМЕР", "ІНФОРМАЦІЯ")
 # GIVEN_NAME/SURNAME; на тесті 98–99% таких фрагментів — gold ОСОБА). Решту PII-міток (DATE, CITY, COMPANY_NAME…)
 # розмітка челенджу здебільшого не маскує, тож їх вмикають явно через --ner-label.
 DEFAULT_LABEL_MAP = {
+    **{kind: kind for kind in TYPES},
     **dict.fromkeys(("PERS", "PER", "PERSON"), "ОСОБА"),
     **dict.fromkeys(("GIVEN_NAME", "GIVENNAME", "FIRST_NAME", "FIRSTNAME", "MIDDLE_NAME", "MIDDLENAME", "SURNAME",
                      "LAST_NAME", "LASTNAME", "FAMILY_NAME", "NAME", "FULL_NAME", "FULLNAME", "NAME_STUDENT"), "ОСОБА"),
