@@ -45,6 +45,80 @@ class ServiceFilterTests(unittest.TestCase):
             with self.subTest(prefix=prefix):
                 self.assertFalse(detect(prefix + "Коваль Іван Іванович", ["Коваль Іван Іванович"])[0]["excluded"])
 
+    def test_additional_participant_roles_and_cases(self):
+        roles = ("Заявник", "заявника", "заявнику", "заявником", "заявники", "заявників",
+                 "Заявниця", "заявниці", "заявницю", "заявницею",
+                 "Стягувач", "стягувача", "стягувачу", "стягувачем", "стягувачі", "стягувачів",
+                 "Скаржник", "скаржника", "скаржнику", "скаржником", "скаржниця", "скаржницею",
+                 "Третя особа", "третьої особи", "третій особі", "третю особу", "третьою особою",
+                 "треті особи", "третіх осіб", "третім особам", "третіми особами")
+        for role in roles:
+            with self.subTest(role=role):
+                text = f"{role} — адвокат Петренко Іван Іванович."
+                result = detect(text, ["Петренко Іван Іванович"])
+                self.assertFalse(result[0]["excluded"])
+                self.assertIsNone(result[0]["role"])
+
+    def test_participant_context_across_layout_and_city_abbreviation(self):
+        prefixes = ("Позивач — адвокат\n", "Позивач — адвокат\r\n",
+                    "Позивач — адвокат (м. Київ) ", "Позивач — адвокат\n(м. Київ)\n",
+                    "Заявник | адвокат | ", "Третя\nособа — нотаріус\n")
+        for prefix in prefixes:
+            with self.subTest(prefix=prefix):
+                text = prefix + "Петренко Іван Іванович подав позов."
+                result = candidates(text)
+                person = next(c for c in result if c["value"] == "Петренко Іван Іванович")
+                self.assertFalse(person["excluded"])
+
+    def test_partial_ner_keeps_participant_context(self):
+        text = "Позивач — адвокат (м. Київ)\nПетренко Іван Іванович подав позов."
+        value = "Іван Іванович"
+        s = text.index(value)
+        result = candidates(text, ner=[EntitySpan(s, s + len(value), value, "ОСОБА", 0.99)])
+        self.assertFalse(next(c for c in result if c["sources"] == ["ner"])["excluded"])
+
+    def test_representatives_of_participants(self):
+        prefixes = ("Представник позивача — адвокат ", "Представник відповідача – адвокат ",
+                    "Представником позивача — адвокатом ", "Представниця відповідача — адвокат ",
+                    "Представник інтересів заявника — адвокат ", "Представник третьої особи — адвокат ",
+                    "Представник\nпозивача — адвокат (м. Київ) ", "Адвокат позивача ")
+        for prefix in prefixes:
+            with self.subTest(prefix=prefix):
+                text = prefix + "Петренко Іван Іванович."
+                result = detect(text, ["Петренко Іван Іванович"])
+                self.assertTrue(result[0]["excluded"])
+                self.assertEqual(result[0]["role"], "адвокат / захисник")
+
+    def test_party_and_their_lawyer_are_distinct_people(self):
+        text = "Позивач Коваль Іван Іванович, адвокат Петренко Олег Петрович."
+        result = detect(text, ["Коваль Іван Іванович", "Петренко Олег Петрович"])
+        self.assertEqual([c["excluded"] for c in result], [False, True])
+
+    def test_participant_context_stops_at_sentence_boundary(self):
+        text = "Позивач подав позов. Адвокат Петренко Іван Іванович представляє його."
+        self.assertTrue(detect(text, ["Петренко Іван Іванович"])[0]["excluded"])
+
+    def test_table_signatures_preserve_offsets(self):
+        examples = (("Суддя | |О.В. Ліпинський", "О.В. Ліпинський"),
+                    ("Суддя |Машевська О.П.", "Машевська О.П."),
+                    ("Суддя:||С.М. Ченцова", "С.М. Ченцова"),
+                    ("Представник позивача – адвокат Пінчук К.О.", "Пінчук К.О."))
+        for text, value in examples:
+            with self.subTest(text=text):
+                result = candidates(text)
+                person = next(c for c in result if c["value"] == value)
+                self.assertTrue(person["excluded"])
+                self.assertEqual(person["start"], text.index(value))
+                self.assertEqual(person["end"], text.index(value) + len(value))
+                self.assertEqual(text[person["start"]:person["end"]], value)
+
+    def test_new_participant_roles_prevent_repeat_propagation(self):
+        text = ("Адвокат Петренко Іван Іванович.\n"
+                "Заявник — адвокат (м. Київ)\nПетренко Іван Іванович.\n"
+                "Петренко Іван Іванович подав заяву.")
+        result = candidates(text)
+        self.assertEqual([c["excluded"] for c in result if c["type"] == "ОСОБА"], [True, False, False])
+
     def test_exact_repeats_and_partial_ner(self):
         text = "Суддя Петренко Іван Іванович.\nПетренко Іван Іванович підписав рішення.\nПетренко подав заяву."
         result = candidates(text)
