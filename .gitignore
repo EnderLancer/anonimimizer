@@ -10,6 +10,7 @@ venv/
 
 # Project
 out/
+dist/
 solution/models/spacy/
 solution/training/*.pkl
 *.pkl

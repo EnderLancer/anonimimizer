@@ -54,27 +54,35 @@ def main():
                          "@pii — набір міток PII-моделей (адреси, номери, дата народження, email)")
     a = ap.parse_args()
     rows = [json.loads(l) for l in open(a.src, encoding="utf8")]
-    from regex_persons import persons as rx_persons
     ner = ner_spans(rows, a.ner, parse_label_map(a.ner_label)) if a.mode != "regex" else {}
-    tagger = None
-    if a.mode == "full":
-        import pycrfsuite, predict
-        tagger = pycrfsuite.Tagger(); tagger.open(os.path.join(HERE, "crf2.model"))
+    tagger = load_tagger() if a.mode == "full" else None
     with open(a.dst, "w", encoding="utf8") as g:
         for r in rows:
-            text = r["original"]
-            spans = ner.get(str(r["id"]), [])
-            pers = [[x.start, x.end, x.text] for x in spans if x.label == "ОСОБА"]          # ОСОБА від моделі (пріоритет)
-            extra = [(x.start, x.end, x.label) for x in spans if x.label != "ОСОБА"]       # інші типи, якщо модель їх дає
-            if a.mode == "model":                                        # лише модель: без regex-осіб і правил
-                g.write(json.dumps({"id": r["id"], "annotations": P.pseudonymize(text, pers, extra=extra, rules=False)}, ensure_ascii=False) + "\n")
-                continue
-            for s, e, _ in rx_persons(text):                             # + regex-особи, що не перетинаються з моделлю
-                if not any(s < p[1] and p[0] < e for p in pers):
-                    pers.append([s, e, text[s:e]])
-            if tagger:
-                extra += [x for x in predict.predict_doc(tagger, text) if x[2] in ("НОМЕР", "ІНФОРМАЦІЯ", "АДРЕСА")]
-            g.write(json.dumps({"id": r["id"], "annotations": P.pseudonymize(text, pers, extra=extra)}, ensure_ascii=False) + "\n")
+            ann = annotate(r["original"], ner.get(str(r["id"]), []), a.mode, tagger)
+            g.write(json.dumps({"id": r["id"], "annotations": ann}, ensure_ascii=False) + "\n")
+
+
+def load_tagger():
+    import pycrfsuite
+    tagger = pycrfsuite.Tagger(); tagger.open(os.path.join(HERE, "crf2.model"))
+    return tagger
+
+
+def annotate(text, spans, mode="full", tagger=None):
+    """Анотації одного документа [{start, end, pseudonym}]. spans — сутності моделі з типами челенджу (після ner_spans),
+    tagger — CRF (load_tagger) для режиму full."""
+    from regex_persons import persons as rx_persons
+    pers = [[x.start, x.end, x.text] for x in spans if x.label == "ОСОБА"]          # ОСОБА від моделі (пріоритет)
+    extra = [(x.start, x.end, x.label) for x in spans if x.label != "ОСОБА"]       # інші типи, якщо модель їх дає
+    if mode == "model":                                                  # лише модель: без regex-осіб і правил
+        return P.pseudonymize(text, pers, extra=extra, rules=False)
+    for s, e, _ in rx_persons(text):                                     # + regex-особи, що не перетинаються з моделлю
+        if not any(s < p[1] and p[0] < e for p in pers):
+            pers.append([s, e, text[s:e]])
+    if mode == "full" and tagger:
+        import predict
+        extra += [x for x in predict.predict_doc(tagger, text) if x[2] in ("НОМЕР", "ІНФОРМАЦІЯ", "АДРЕСА")]
+    return P.pseudonymize(text, pers, extra=extra)
 
 
 if __name__ == "__main__":

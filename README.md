@@ -87,6 +87,22 @@ Actions → **NER model evaluation** → Run workflow (`.github/workflows/ner-mo
 
 Для приватних моделей додайте секрет репозиторію `HF_TOKEN` (Settings → Secrets and variables → Actions) з read-токеном спільного акаунта Hugging Face. Токен передається лише в job `ner`.
 
+### Демо (Hugging Face Space)
+
+`space/app.py` — Gradio-демо: текст рішення ──► режим (0–3) ──► підсвічені сутності, псевдонімізований текст і анотації. NER-модель задається в інтерфейсі тим самим рядком, що й `--ner` (`spacy:` / `hf:` / `gliner:`, з опціями), мітки — як `--ner-label` (`LOC=АДРЕСА @pii`); таблиця «Сутності моделі» показує сирі мітки, щоб підібрати відповідність. spaCy-модель з HF (`spacy:dchaplinsky/uk_ner_web_trf_13class`) завантажується як тека, без `.whl`. Логіка документа спільна з `run.py` (`run.annotate`), тож демо дає ту саму розмітку, що й CLI.
+
+Локально: `pip install gradio spacy-transformers python-crfsuite`, потім `python space/app.py`.
+
+Автодеплой (`.github/workflows/deploy-space.yml`): після успішної **Evaluation** на push у main `.github/scripts/build_space.sh` збирає `space/*`, модулі пайплайну й `crf2.model` у `dist/space` і завантажує їх у Space (`hf upload`); Space створюється, якщо його ще немає. Ручний запуск: Actions → **Deploy Space** → Run workflow. Налаштування (Settings → Secrets and variables → Actions):
+
+| Що | Тип | Значення |
+|---|---|---|
+| `HF_SPACE` | змінна | `<акаунт>/<назва>`; поки не задана, автодеплой пропускається |
+| `HF_SPACE_TOKEN` | секрет | write-токен цього акаунта Hugging Face |
+| `HF_SPACE_HARDWARE` | змінна, необов'язково | залізо нового Space, за замовчуванням `zero-a10g` (ZeroGPU) |
+
+Gradio-Space на безкоштовному акаунті можливий лише на ZeroGPU і лише для акаунта, старшого за 30 днів; інакше потрібен PRO. Інференс іде на CPU, тож квоту ZeroGPU демо не витрачає. Що ще треба зробити, щоб запустити Space, і відомі ризики: [`space/NEXT_STEPS.md`](space/NEXT_STEPS.md).
+
 ## Як це працює
 
 1. **ОСОБА.** Базово працює spaCy `uk_ner_web_trf_13class` (мітка PERS). Доповнює її regex: повне ПІБ (Прізвище Ім'я По-батькові), «Прізвище І. П.», «І. П. Прізвище», «Прізвище І.». Regex-фрагмент додається, лише якщо не перетинається з фрагментом моделі. Службові слова (позивач, відповідач, суд, головуючий…) відкидаються. Фрагменти однієї особи кластеризуються і отримують спільний номер (`ОСОБА_n`).
@@ -153,6 +169,7 @@ Actions → **NER model evaluation** → Run workflow (`.github/workflows/ner-mo
 | `ner_adapters.py` | адаптери NER-моделей (spaCy, Hugging Face, GLiNER) до спільного формату `EntitySpan`, кеш |
 | `ner_postprocess.py` | складання частин сутностей NER-моделі (ім'я, адреса) перед злиттям з правилами |
 | `.github/workflows/ner-models.yml`, `.github/scripts/` | ручна оцінка з довільною NER-моделлю, сценарії запуску |
+| `space/`, `.github/workflows/deploy-space.yml` | Gradio-демо на Hugging Face Space і його автодеплой |
 | `predict_trf.py` | усі правила (АДРЕСА, НОМЕР, ІНФОРМАЦІЯ), злиття, нумерація псевдонімів |
 | `regex_persons.py` | regex для ОСОБА |
 | `predict.py`, `common.py` | CRF-ознаки, інференс CRF, кластеризація осіб |
