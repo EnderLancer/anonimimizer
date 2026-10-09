@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from pseudo.data import check_window  # noqa: E402
 from pseudo.train import run  # noqa: E402
 
 
@@ -34,6 +35,10 @@ def main() -> None:
     ap.add_argument("--grad-checkpointing", action="store_true", help="trade compute for memory (long windows)")
     ap.add_argument("--skip-if-done", default=None, help="directory of a previous run (e.g. on Drive); skip when its fingerprint matches")
     a = ap.parse_args()
+    try:
+        check_window(a.window, a.stride)
+    except ValueError as e:
+        ap.error(str(e))
     run(a.model, Path(a.out), a.n_docs, a.dev_docs, a.epochs, a.lr, a.batch, a.grad_accum, a.seed, a.oversample_number,
         not a.no_fp16, a.push_to, a.max_windows, window=a.window, stride=a.stride, use_masks=not a.no_masks,
         grad_checkpointing=a.grad_checkpointing, skip_if_done=Path(a.skip_if_done) if a.skip_if_done else None)

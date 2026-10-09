@@ -48,7 +48,38 @@ ID_CARD = re.compile(r"\b(\d{9})\b")
 ID_CTX = re.compile(r"(паспорт|ID-?карт|ід-?карт|№\s*запису|УНЗР|унікальн\w+\s+номер\w*\s+запису)", re.I)
 UNZR = re.compile(r"\b(\d{8}-\d{5})\b")
 IBAN = re.compile(r"\bUA\d{27}\b")
-VP = re.compile(r"(?:\bВП|\b(?i:виконавч\w+\s+провадженн\w+))\s*№\s*(\d{7,10})\b")
+# --- enforcement-proceeding numbers; every number of a match is a capture of the group «n»: m.spans("n") ---
+# «код ЄДРПОУ » / «Код за ЄДРПОУ » / «код в ЄДР-» / «ЄДРПОУ – » / «код » right before «ВП»: there ВП is «відокремлений підрозділ»
+# and the number is a company code. Only link words may stand in between: «з кодом доступу ВП № …» is a proceeding
+_VP_CODE = r"(?:ЄДРПОУ|\b(?i:код(?:у|ом|а|і)?))(?:\s+(?:за|в|у)(?!\w)|\s+(?i:ЄДР\w*)|\s*[:\-–—])*\s*"
+# «ВП» / «АСВП» / «ЗВП» / «виконавчому провадженні» (not «ЄДРПОУ ВП», not «ВПО»); «ВП75258642» is allowed, a digit may follow «ВП».
+# The company-code lookbehind stands behind the literal: in front of the alternation it ran at every position (13 times slower)
+_VP_CUE = rf"(?:\bВП(?<!{_VP_CODE}ВП)(?![^\W\d])|\b(?:АСВП|ЗВП)(?!\w)|\b(?i:виконавч\w+\s+провадженн\w+)(?!\w))"
+# « від 23.07.2021» / « від 22 грудня 2023 року» between the cue and the number
+_VP_DATE = r"(?:\s+від\s+\d{1,2}(?:\.\d{2}\.|\s+[а-яіїєґ]+\s+)\d{4}(?:\s*(?:р\.|року))?)?"
+# « № » / «№№» / « за № » / « по № » / « N » / « N?» (a mangled «№») / «: № » — a number sign
+_VP_NO = r"(?:\s*(?:за|по)(?!\w))?\s*:?\s*(?:(?:№\s*)+|N\s*[?°º]?\s*):?\s*"
+# «74591493»; not «755/19637/17» (a case number), not «1434048,11» (an amount), not the head of a longer number
+_VP_NUM = r"(?<![\d/\-])(?P<n>\d{7,10})(?![\w/]|-\d|[.,]\d{2}(?!\d))"
+# the same without a number sign before it: not «1500000 гривень» / «2500000 грн» (an amount), not «0501234567» (a phone;
+# no proceeding number of the corpus starts with 0)
+_VP_BARE = rf"(?!0){_VP_NUM}(?!\s*(?:тис|млн|грн|грив|коп|дол|євро))"
+# «№ 74591493» / «: 68293414» / « 62884789» — one number with or without the sign
+_VP_ITEM = rf"(?:{_VP_NO}{_VP_NUM}|\s*:?\s*{_VP_BARE})"
+# « та № 74591949» / «, 69474005» / «; №63958006» — the next numbers of a list
+_VP_MORE = rf"(?:\s*(?:[,;]|та\b|і\b|й\b)\s*(?:№\s*{_VP_NUM}|{_VP_BARE}))"
+# «виконавчі провадження № 74591493 та № 74591949», «ВП 62884789», «провадження від 23.07.2021 № 66181350», «№ АСВП: 68293414»
+VP = re.compile(rf"{_VP_CUE}{_VP_DATE}{_VP_ITEM}{_VP_MORE}*")
+# «виконавчі провадження: № » right before a filled НОМЕР placeholder: use as VP_LIST_HEAD.search(text, start - VP_HEAD_WINDOW, start)
+VP_LIST_HEAD = re.compile(rf"{_VP_CUE}{_VP_DATE}(?:{_VP_NO}|\s*:?\s*)\Z")
+VP_HEAD_WINDOW = 100  # the longest head: «виконавчому провадженні від 22 грудня 2023 року за № »
+# «, № 58365604, № 61493933 та 61876187» right after that placeholder: use as VP_LIST_MORE.match(text, end)
+VP_LIST_MORE = re.compile(rf"{_VP_MORE}+")
+# «Фізична особа-підприємець » / «ФОП » / «боржник - » / «стягувача: » right before an open name: a party, not an official
+VP_PARTY_LEFT = re.compile(r"(?:\bФОП|(?i:\bфізичн\w+\s+особ\w+\s*[-–—]?\s*підприєм\w+|\bборжни\w+|\bстягувач\w*))\s*[-–—:,]?\s*\Z")
+# «третя особа, яка не заявляє самостійних вимог на предмет спору, на стороні відповідача Фізична особа-підприємець » before
+# that name: a third party of a dispute between companies (decision 119839903), not the debtor
+VP_THIRD_LEFT = re.compile(r"(?i:\bтрет\w+\s+ос[оі]б\w*)[^.;\n]{0,130}\Z")
 CARD16 = re.compile(r"\b\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\b")
 CARD_CTX = re.compile(r"(картк\w*|карт[аи]\b|card)", re.I)
 IBAN_PERSON = re.compile(r"(на\s+користь|стягувач\w*|позивач\w*|відповідач\w*|боржник\w*|"

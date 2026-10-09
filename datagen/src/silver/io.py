@@ -19,7 +19,10 @@ TRAIN_PARQUET = DATA / "train" / "2024-court-decisions.parquet"
 # 250 decisions of TEST_POOL_PARQUET, which silver.exclude keeps out of the training data
 VS_PARQUET = DATA / "train" / "2024-5K-supreme-court-decisions-deduplicated.parquet"
 TEST_POOL_PARQUET = DATA / "train" / "250-deanonymized-court-cases.parquet"
-SOURCES = (("vs5k", VS_PARQUET), ("edrsr", TRAIN_PARQUET))
+# more Supreme Court decisions of 2024, fetched from the registry's open-data dump by scripts/fetch_edrsr.py (optional)
+VS_EDRSR_PARQUET = DATA / "train" / "2024-vs-edrsr.parquet"
+SOURCES = tuple((name, path) for name, path in (("vs5k", VS_PARQUET), ("vs_edrsr", VS_EDRSR_PARQUET), ("edrsr", TRAIN_PARQUET))
+                if name != "vs_edrsr" or path.exists())
 
 
 def read_parquet_texts(path: Path = TRAIN_PARQUET, limit: int | None = None) -> Iterator[tuple[str, str]]:

@@ -8,8 +8,6 @@ import re
 
 PLACEHOLDER = re.compile(r"(ОСОБА|АДРЕСА|НОМЕР|ІНФОРМАЦІЯ)_(\d+)")
 ODD_PLACEHOLDER = re.compile(r"\b(?:ІМЕІ\w*|ОСОБИ|ОСОБ)_\d+")
-RUSSIAN = re.compile(r"[ыэъёЫЭЪЁ]")
-MOJIBAKE = re.compile(r"[àáâãäåæçèéêëìíîïðñòóôõö]{3,}")
 
 _SPACE_BEFORE_PUNCT = re.compile(r"[ \t ]+([,.;:)»])")
 _SPACE_AFTER_OPEN = re.compile(r"([(«])[ \t ]+")

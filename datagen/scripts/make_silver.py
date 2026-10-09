@@ -7,7 +7,7 @@
     uv run scripts/make_silver.py ner
     uv run scripts/make_silver.py excerpt
     uv run scripts/make_silver.py audit | samples | split | export | report
-    uv run scripts/make_silver.py all    [--limit N] [--skip-ner] [--variant large]
+    uv run scripts/make_silver.py all    [--limit N] [--skip-ner] [--variant large] [--addresses ukrposhta]
 """
 from __future__ import annotations
 
@@ -30,8 +30,11 @@ def main() -> None:
     ap.add_argument("--batch", type=int, default=8, help="ner: spaCy batch size")
     ap.add_argument("--variant", choices=["base", "large"], default="base",
                     help="large: more of the general corpus and every Supreme Court decision filled twice; written to data/silver_large/")
+    ap.add_argument("--addresses", default="ukrposhta,osm",
+                    help="address tables to use; «ukrposhta» alone rebuilds the data as it was before scripts/fetch_osm.py")
     a = ap.parse_args()
     os.environ["SILVER_VARIANT"] = a.variant  # silver.io reads it on import
+    os.environ["SILVER_ADDRESSES"] = a.addresses  # silver.fill.addresses reads it on import
     from silver import pipeline
 
     pipeline.run(a)

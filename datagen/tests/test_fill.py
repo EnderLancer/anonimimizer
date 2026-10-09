@@ -3,11 +3,12 @@ import re
 
 import pytest
 
-from silver.fill.addresses import AddressGenerator
+from silver.fill.addresses import TABLES, USE, AddressGenerator
 from silver.fill.context import number_subtype
 from silver.fill.numbers import NumberGenerator
 from silver.fill.region import doc_region
 from silver.fill.run import Filler
+from silver.io import RESOURCES
 from silver.normalize import PLACEHOLDER, find_placeholders, normalize
 
 
@@ -71,7 +72,25 @@ def test_addresses_follow_the_region_and_settlements_of_the_document():
     made = [gen.new_address(ctx) for _ in range(400)]
     assert sum(a["region"] == "Одеська" for a in made) > 320
     assert sum(a["np"] == "Нерубайське" for a in made) > 200
-    assert not any(a["with_region"] or a["district"] for a in made if a["region"] == "Київ")
+    # the city of Kyiv has no region and no district around it, only districts inside it
+    assert not any(a["with_region"] or (a["district"] and not a["city_district"]) for a in made if a["region"] == "Київ")
+
+
+@pytest.mark.skipif("osm" not in USE or not (RESOURCES / TABLES["osm"]).exists(), reason="scripts/fetch_osm.py was not run")
+def test_openstreetmap_rows_add_city_districts():
+    gen = AddressGenerator(random.Random(6))
+    ctx = gen.doc_context("Печерський районний суд міста Києва, Київський апеляційний суд")
+    made = [gen.new_address(ctx) for _ in range(3000)]
+    kyiv = [a for a in made if a["np"] == "Київ"]
+    share = sum(a["src"] == "osm" for a in kyiv) / len(kyiv)
+    assert 0.2 < share < 0.4
+    districts = {a["district"] for a in kyiv if a["city_district"]}
+    assert districts and districts <= {"Голосіївський", "Дарницький", "Деснянський", "Дніпровський", "Оболонський", "Печерський",
+                                       "Подільський", "Святошинський", "Солом’янський", "Шевченківський"}
+    assert all(a["src"] == "osm" for a in kyiv if a["city_district"])
+    a = next(a for a in kyiv if a["city_district"])
+    assert f"{a['district']} р" in gen.render(a) and "обл" not in gen.render(a)
+    assert all(not a["with_zip"] for a in made if not a["zip"])
 
 
 def test_one_address_style_per_document():
@@ -109,6 +128,8 @@ def test_one_date_format_per_document():
     ("РНОКПП НОМЕР_1, паспорт № ", "passport"),
     ("паспорт громадянина України серії ", "svidotstvo"),
     ("у виконавчому провадженні № ", "provadzhennia"),
+    ("постанову про арешт коштів боржника у ВП № ", "provadzhennia"), ("за даними АСВП ", "provadzhennia"),
+    ("код ЄДРПОУ ВП ", "generic"), ("РНОКПП НОМЕР_1, ВПО № ", "rnokpp"),
 ])
 def test_number_subtype_takes_the_closest_cue(left, expected):
     assert number_subtype(left, "") == expected

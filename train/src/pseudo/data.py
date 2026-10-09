@@ -2,15 +2,27 @@
 from __future__ import annotations
 
 from pseudo import L2I, LABELS
+from pseudo.tokenization import ids_and_offsets
 
 WINDOW, STRIDE = 512, 128
+# Raise when decode() or the linking of pseudonyms (pseudo.linking) changes: scripts/leaderboard.py then predicts the
+# test set again, because a cached result carries the pseudonyms and the B-cubed score computed from them.
+DECODE_VERSION = 3
+
+
+def check_window(window: int, stride: int) -> None:
+    """Raise ValueError unless the windows advance: a window holds window - 2 text tokens and each next one starts
+    window - 2 - stride tokens later, so a stride of window - 2 or more would never reach the end of the text."""
+    if window <= 2 or not 0 <= stride < window - 2:
+        raise ValueError(f"window {window} / stride {stride} cannot be used: need window > 2 and 0 <= stride < window - 2 "
+                         "(two tokens of every window are <s> and </s>, and consecutive windows must move forward)")
 
 
 def _windows(tokenizer, text: str, window: int, stride: int) -> list[tuple[list[int], list[tuple[int, int]]]]:
     """Tokenize the whole text once and cut it into overlapping windows ourselves (transformers 5 no
     longer returns sliding windows from `return_overflowing_tokens`)."""
-    enc = tokenizer(text, add_special_tokens=False, return_offsets_mapping=True, truncation=False)
-    ids, offs = enc["input_ids"], [tuple(o) for o in enc["offset_mapping"]]
+    check_window(window, stride)  # before tokenizing: a step of zero or less would append windows forever
+    ids, offs = ids_and_offsets(tokenizer, text)
     body = window - 2  # room for <s> … </s>
     step = body - stride
     out = []
@@ -74,7 +86,8 @@ def encode(tokenizer, text: str, annotations: list[dict], masks: list[dict], win
 
 def decode(text: str, windows: list[dict], preds: list[list[int]]) -> list[dict]:
     """Per-window token predictions -> char spans. Overlapping windows: the token farther from the
-    window edge wins. Same-type B-/I- tokens separated only by whitespace are merged."""
+    window edge wins. Same-type tokens separated by at most one whitespace character are merged, unless the
+    second one is a B- token after the gap: «Коваль\nШевченко» stays two persons."""
     n = len(text)
     char_lab = [None] * n
     char_conf = [-1] * n
@@ -91,7 +104,7 @@ def decode(text: str, windows: list[dict], preds: list[list[int]]) -> list[dict]
     for i, lab in enumerate(char_lab):
         if lab and lab != "O":
             t = lab[2:]
-            if cur and cur["type"] == t and text[cur["end"]:i].strip() == "" and i - cur["end"] <= 1 and not (lab.startswith("B-") and i > cur["end"] and False):
+            if cur and cur["type"] == t and text[cur["end"]:i].strip() == "" and i - cur["end"] <= 1 and not (lab.startswith("B-") and i > cur["end"]):
                 cur["end"] = i + 1
             else:
                 if cur:

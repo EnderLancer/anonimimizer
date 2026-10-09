@@ -14,11 +14,12 @@ from pathlib import Path
 import pyarrow.parquet as pq
 import torch
 from datasets import Dataset
-from transformers import (AutoModelForTokenClassification, AutoTokenizer, DataCollatorForTokenClassification, Trainer,
+from transformers import (AutoModelForTokenClassification, DataCollatorForTokenClassification, Trainer,
                           TrainerCallback, TrainingArguments)
 
 from pseudo import DATA, L2I, LABELS, SILVER, TYPES
-from pseudo.data import encode
+from pseudo.data import STRIDE, WINDOW, check_window, encode
+from pseudo.tokenization import load_tokenizer
 from pseudo.predict import best_device, predict_doc, spans_to_submission, write_submission
 
 log = logging.getLogger("pseudo")
@@ -100,9 +101,19 @@ def load_docs(path: Path, n: int | None, seed: int, oversample_number: float = 0
     return rows
 
 
+def build_features(tokenizer, rows: list[dict], window: int = WINDOW, stride: int = STRIDE, use_masks: bool = True) -> list[dict]:
+    """Training windows of the documents. Without masks the masked spans are trained as O."""
+    feats = []
+    for d in rows:
+        for w in encode(tokenizer, d["text"], d["annotations"], d["masks"] if use_masks else [], window=window, stride=stride):
+            w.pop("offsets")
+            feats.append(w)
+    return feats
+
+
 def evaluate_on_dev(model, tokenizer, dev_rows: list[dict], device: str, out_dir: Path, tag: str) -> dict:
     model.eval()
-    sub = [spans_to_submission(d["src_id"], predict_doc(model, tokenizer, d["text"], device)) for d in dev_rows]
+    sub = [spans_to_submission(d["src_id"], d["text"], predict_doc(model, tokenizer, d["text"], device)) for d in dev_rows]
     sub_path = out_dir / f"dev_submission_{tag}.jsonl"
     write_submission(sub_path, sub)
     ids = {d["src_id"] for d in dev_rows}
@@ -141,6 +152,7 @@ def run(model_name: str, out_dir: Path, n_docs: int | None, dev_docs: int | None
         grad_accum: int, seed: int, oversample_number: float, fp16: bool, push_to: str | None, max_windows: int | None,
         window: int = 512, stride: int = 128, use_masks: bool = True, grad_checkpointing: bool = False,
         skip_if_done: Path | None = None) -> None:
+    check_window(window, stride)  # first, so that a bad pair leaves no run directory or config.json behind
     torch.manual_seed(seed)
     device = best_device()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -152,6 +164,10 @@ def run(model_name: str, out_dir: Path, n_docs: int | None, dev_docs: int | None
     params = {"model": model_name, "n_docs": n_docs, "epochs": epochs, "lr": lr, "batch": batch, "grad_accum": grad_accum,
               "seed": seed, "oversample_number": oversample_number, "window": window, "stride": stride, "use_masks": use_masks,
               "data_version": dv}
+    if (window, stride, use_masks) != (WINDOW, STRIDE, True):
+        # Until 2026-10-08 these three settings were recorded but training always used 512 / 128 with masks. The marker
+        # gives a run trained with them another fingerprint, so --skip-if-done retrains the old runs.
+        params["settings_applied"] = True
     fp = fingerprint(params)
     if skip_if_done and (skip_if_done / "config.json").exists():
         prev = json.loads((skip_if_done / "config.json").read_text(encoding="utf-8"))
@@ -167,15 +183,11 @@ def run(model_name: str, out_dir: Path, n_docs: int | None, dev_docs: int | None
                                                      "started": time.strftime("%Y-%m-%d %H:%M:%S")}, ensure_ascii=False, indent=1),
                                          encoding="utf-8")
     log.info("run %s fingerprint %s data %s", out_dir.name, fp, dv)
-    tok = AutoTokenizer.from_pretrained(model_name)
+    tok = load_tokenizer(model_name)
     train_rows = load_docs(SILVER / "train.parquet", n_docs, seed, oversample_number)
     dev_rows = load_docs(SILVER / "dev.parquet", dev_docs, seed)
     t0 = time.time()
-    feats = []
-    for d in train_rows:
-        for w in encode(tok, d["text"], d["annotations"], d["masks"]):
-            w.pop("offsets")
-            feats.append(w)
+    feats = build_features(tok, train_rows, window, stride, use_masks)
     if max_windows:
         feats = feats[:max_windows]
     log.info("%s: %d train docs -> %d windows (%.0fs), %d dev docs, device %s", model_name, len(train_rows), len(feats),

@@ -26,21 +26,22 @@ def main() -> None:
     a = ap.parse_args()
 
     import torch
-    from transformers import AutoModelForTokenClassification, AutoTokenizer
+    from transformers import AutoModelForTokenClassification
 
     from pseudo.predict import best_device, predict_doc, spans_to_submission, write_submission
+    from pseudo.tokenization import load_tokenizer
 
     if a.threads:
         torch.set_num_threads(a.threads)
     device = a.device or best_device()
-    tok = AutoTokenizer.from_pretrained(a.model)
+    tok = load_tokenizer(a.model)
     model = AutoModelForTokenClassification.from_pretrained(a.model).to(device).eval()
     rows = [json.loads(l) for l in open(a.input, encoding="utf-8") if l.strip()]
     t0 = time.time()
     out = []
     for i, r in enumerate(rows, 1):
         text = r.get("original", r.get("text"))
-        out.append(spans_to_submission(r["id"], predict_doc(model, tok, text, device, a.batch)))
+        out.append(spans_to_submission(r["id"], text, predict_doc(model, tok, text, device, a.batch)))
         if i % 50 == 0:
             print(f"{i}/{len(rows)} docs, {time.time() - t0:.0f}s", file=sys.stderr)
     write_submission(a.output, out)

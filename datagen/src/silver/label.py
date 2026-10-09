@@ -6,7 +6,7 @@ from collections import Counter
 
 from silver.io import read_jsonl, step_path, write_jsonl
 from silver.masks import label_masks
-from silver.merge import merge
+from silver.merge import any_overlap, merge
 from silver.numbers import label_numbers
 from silver.persons import label_persons
 
@@ -17,9 +17,12 @@ def label_doc(doc: dict) -> dict:
     text = doc["text"]
     labels = list(doc["labels"])
     masks = list(doc["masks"])
-    labels += label_persons(text, labels)
+    # A value that the fill step masked on purpose (it could not tell what the clerk hid) stays a mask: merge() lets a
+    # label win over a mask, so a name or a number that a regex layer finds inside such a value is dropped here.
+    filled = list(doc["masks"])
+    labels += [l for l in label_persons(text, labels) if not any_overlap(l, filled)]
     nl, nm, stats = label_numbers(text, labels, masks)
-    labels += nl
+    labels += [l for l in nl if not any_overlap(l, filled)]
     masks += nm
     nl, nm = label_masks(text, labels, masks)
     labels += nl

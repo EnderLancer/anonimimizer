@@ -9,11 +9,14 @@ from collections import Counter
 
 from silver.exclude import ExcludedPool, case_number
 from silver.io import SOURCES, VARIANT, read_parquet_texts, step_path, write_jsonl
-from silver.normalize import MOJIBAKE, ODD_PLACEHOLDER, RUSSIAN, find_placeholders, normalize
+from silver.normalize import ODD_PLACEHOLDER, find_placeholders, normalize
 
 log = logging.getLogger("silver")
 
 MIN_LEN, MAX_LEN = 1500, 10000
+# The Hugging Face files and the test set hold decisions of at most 10 000 characters; the registry corpus (vs_edrsr)
+# has no such cap, and «large» keeps its longer decisions too (training reads sliding windows anyway)
+MAX_LEN_REGISTRY = {"base": 10000, "large": 30000}[VARIANT]
 DEDUP_PREFIX = 300
 _CODES = {
     "КУпАП": re.compile(r"КУпАП|адміністративн\w+\s+правопорушенн"),
@@ -48,15 +51,11 @@ def _keep(doc_id: str, share: float) -> bool:
     return int(hashlib.sha1(doc_id.encode()).hexdigest(), 16) % 10000 < share * 10000
 
 
-def _reject_reason(text: str, n_ph: int, seen: set) -> str | None:
-    if not (MIN_LEN <= len(text) <= MAX_LEN):
+def _reject_reason(text: str, n_ph: int, seen: set, max_len: int = MAX_LEN) -> str | None:
+    if not (MIN_LEN <= len(text) <= max_len):
         return "length"
-    if len(RUSSIAN.findall(text)) > 3:
-        return "russian"
     if ODD_PLACEHOLDER.search(text):
         return "odd_placeholder"
-    if MOJIBAKE.search(text):
-        return "mojibake"
     key = text[:DEDUP_PREFIX]
     if key in seen:
         return "duplicate"
@@ -83,13 +82,15 @@ def run_filter(limit: int | None = None, negatives: float = 0.03) -> None:
                 seen_ids.add(doc_id)
                 text = normalize(raw)
                 placeholders = find_placeholders(text)
-                reason = _reject_reason(text, len(placeholders), seen) or pool.reason(doc_id, text)
+                max_len = MAX_LEN_REGISTRY if corpus == "vs_edrsr" else MAX_LEN
+                reason = _reject_reason(text, len(placeholders), seen, max_len) or pool.reason(doc_id, text)
                 if reason:
                     reasons[reason] += 1
                     continue
                 is_negative = not placeholders
-                kind = "ВС" if corpus == "vs5k" else doc_kind(text)
-                if corpus != "vs5k":
+                supreme = corpus in ("vs5k", "vs_edrsr")
+                kind = "ВС" if supreme else doc_kind(text)
+                if not supreme:
                     rare = kind == "ВС" or bool({p["type"] for p in placeholders} - {"ОСОБА"})
                     share = KEEP[kind] * (1.0 if rare else KEEP_PERSONS_ONLY)
                     if not is_negative and not _keep(doc_id, share):

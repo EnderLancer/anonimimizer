@@ -5,6 +5,18 @@ from silver.merge import merge
 from silver import patterns as P
 
 
+def test_a_value_masked_by_the_fill_step_is_not_labelled_later():
+    # the fill step could not tell what the clerk hid and masked its value; the regex layers must not label inside it
+    text = "Ухвалою слідчого судді Іщук Т. П. надано доступ. РНОКПП 3127985494 належить заявнику, суддя Коваль І. П."
+    name, number = text.index("Іщук Т. П."), text.index("3127985494")
+    masks = [{"start": name, "end": name + 10, "reason": "info_unsure"}, {"start": number, "end": number + 10, "reason": "info_unsure"}]
+    out = label_doc({"id": "1", "text": text, "text_pseudonymized": text, "labels": [], "masks": masks})
+    assert [text[l["start"]:l["end"]] for l in out["labels"]] == ["Коваль І. П."]  # the open name outside the masks
+    assert [(m["start"], m["reason"]) for m in out["masks"]] == [(name, "info_unsure"), (number, "info_unsure")]
+    free = label_doc({"id": "1", "text": text, "text_pseudonymized": text, "labels": [], "masks": []})
+    assert {text[l["start"]:l["end"]] for l in free["labels"]} == {"Іщук Т. П.", "3127985494", "Коваль І. П."}
+
+
 def _doc(text, labels=None, masks=None):
     return {"id": "1", "text": text, "text_pseudonymized": text, "labels": labels or [], "masks": masks or []}
 
@@ -42,9 +54,18 @@ def test_rnokpp_and_edrpou():
 
 
 def test_enforcement_proceeding_numbers():
-    d = label_doc(_doc("у ВП № 61234567 та у виконавчому провадженні №65432109; справа № 2-2722/08, наказ № 1234567890123"))
+    text = "боржник Коваль Іван Петрович у ВП № 61234567 та у виконавчому провадженні №65432109; справа № 2-2722/08, наказ № 1234567890123"
+    # the number is personal data only next to a participant: a filled ОСОБА placeholder or an open name after a party word
+    # («боржник …»); the open name of an official («державний виконавець …») does not count; see tests/test_vp.py
+    person = {"start": 8, "end": 28, "type": "ОСОБА", "pseudonym": "ОСОБА_1", "source": "placeholder"}
+    d = label_doc(_doc(text, labels=[person]))
     assert [s for s, t, src in _spans(d) if src == "vp"] == ["61234567", "65432109"]
     assert all(t == "НОМЕР" for _, t, src in _spans(d) if src == "vp")
+    assert [s for s, t, src in _spans(label_doc(_doc(text))) if src == "vp"] == ["61234567", "65432109"]
+    text = text.replace("боржник", "державний виконавець")
+    d = label_doc(_doc(text))
+    assert not _spans(d, "vp")
+    assert [text[m["start"]:m["end"]] for m in d["masks"] if m["reason"] == "vp_no_person"] == ["61234567", "65432109"]
 
 
 def test_passport_needs_context():
