@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from collections import Counter
 import random
 import re
 
@@ -43,6 +44,16 @@ def _info(out: dict, idx: int, where: str = "labels") -> list[str]:
     return [out["text"][m["start"]:m["end"]] for m in out["masks"]]
 
 
+def _filled(out: dict) -> list[str]:
+    """Every ІНФОРМАЦІЯ value of the text in its order, a label or a mask alike."""
+    spans = [l for l in out["labels"] if l["type"] == "ІНФОРМАЦІЯ"] + out["masks"]
+    return [out["text"][x["start"]:x["end"]] for x in sorted(spans, key=lambda x: x["start"])]
+
+
+def _civil(out: dict) -> list[str]:
+    return [out["text"][m["start"]:m["end"]] for m in out["masks"] if m["reason"] == "info_civil_org"]
+
+
 # ---- masks ---------------------------------------------------------------------------------------------------------
 def test_a_masked_value_is_a_mask_at_every_mention_and_never_a_label(monkeypatch):
     raw = ("ОСОБА_1 звернувся з позовом до ІНФОРМАЦІЯ_1 про стягнення коштів. Суддя ІНФОРМАЦІЯ_2 відкрив провадження. "
@@ -67,16 +78,25 @@ def test_a_masked_value_is_a_mask_at_every_mention_and_never_a_label(monkeypatch
     ("nick", {"nick_kind": "page"}, True), ("nick", {"nick_kind": "handle", "mask": True}, True),  # masked since the review of v6
     ("org", {}, False), ("org", {"org_kind": "unit"}, False), ("org", {"org_kind": "unit", "mask": True}, True),
     ("org", {"org_kind": "short"}, False), ("org", {"org_kind": "holder"}, False), ("org", {"org_kind": "official"}, True),
-    ("quoted", {"quote_kind": "company"}, False), ("quoted", {"quote_kind": "bank"}, False), ("quoted", {"quote_kind": "formation"}, False),
-    ("quoted", {"quote_kind": "institution"}, False), ("quoted", {"quote_kind": "person"}, True), ("quoted", {"quote_kind": "unknown"}, True),
-    ("quoted", {"quote_kind": "no_such_kind"}, True), ("quoted", {}, False),
+    # only a military formation is a label: a company, a bank, a hospital is not personal data (reason info_civil_org)
+    ("quoted", {"quote_kind": "company"}, True), ("quoted", {"quote_kind": "bank"}, True), ("quoted", {"quote_kind": "formation"}, False),
+    ("quoted", {"quote_kind": "institution"}, True), ("quoted", {"quote_kind": "person"}, True), ("quoted", {"quote_kind": "unknown"}, True),
+    ("quoted", {"quote_kind": "no_such_kind"}, True), ("quoted", {}, True),
 ])
 def test_every_subtype_of_the_contract_is_filled_and_masked_as_its_table_says(monkeypatch, subtype, hints, masked):
     _force(monkeypatch, {1: (subtype, hints)})
     out = run.Filler(seed=2).fill(_doc("ОСОБА_1 подав заяву. У справі зазначено «ІНФОРМАЦІЯ_1» як доказ."))
     assert "ІНФОРМАЦІЯ" not in out["text"]
-    assert bool(_info(out, 1, "masks")) is masked and bool(_info(out, 1)) is not masked
-    assert run.resolve_subtype(subtype, hints)[1]["mask"] is masked
+    if subtype == "org" and not masked and _civil(out):  # the body that was drawn is a civil one or a company
+        assert not _info(out, 1) and len(_civil(out)) == len(out["masks"]) == 1
+    else:
+        assert bool(_info(out, 1, "masks")) is masked and bool(_info(out, 1)) is not masked
+    resolved = run.resolve_subtype(subtype, hints)[1]
+    assert resolved["mask"] is masked
+    civil_quote = subtype == "quoted" and hints.get("quote_kind", "company") in run.CIVIL_QUOTES
+    assert (resolved.get("reason") == "info_civil_org") is civil_quote
+    if subtype != "org":
+        assert bool(_civil(out)) is civil_quote
     assert out["n_persons"] == 1  # a masked surname in quotes is not a person of the document
 
 
@@ -102,6 +122,30 @@ def test_the_later_layers_keep_the_masks_of_the_fill_step(monkeypatch):
         assert [cut["text"][m["start"]:m["end"]] for m in cut["masks"] if m["reason"] == "info_unsure"] == [out["text"][s:e] for s, e in unsure]
 
 
+# ---- only a military body is a label ---------------------------------------------------------------------------------
+def test_a_civil_body_or_a_company_is_masked_at_every_mention_and_a_military_body_is_labelled(monkeypatch):
+    raw = ("ОСОБА_1 звернувся з позовом до ІНФОРМАЦІЯ_1 про стягнення коштів. Суд зобов'язав ІНФОРМАЦІЯ_1 надати довідку, "
+           "а документи зберігаються в ІНФОРМАЦІЯ_2 .")
+    _force(monkeypatch, {1: ("org", {"org_kind": "party"}), 2: ("org", {"org_kind": "holder"})})
+    kinds = Counter()
+    for seed in range(200):
+        f = run.Filler(seed=seed)
+        out = f.fill(_doc(raw, doc_id=str(seed)))
+        labelled, masked = [v for i in (1, 2) for v in _info(out, i)], _civil(out)
+        assert len(labelled) + len(masked) == 3 and len(_info(out, 1)) in (0, 2)  # one decision per placeholder, not per mention
+        assert {m["reason"] for m in out["masks"]} <= {"info_civil_org"}
+        assert not any(re.search(r"Пенсійного фонду|поліції|соціального захисту населення|ТОВ|АТ |ради$", v) for v in labelled), labelled
+        kinds.update(k for k in f.stats if k.startswith("info_civil_"))
+    assert kinds["info_civil_civil"] > 20 and kinds["info_civil_company"] > 5 and kinds["info_civil_masked_org"] > 30
+
+
+def test_no_military_draw_is_a_civil_body():
+    g = OrgGenerator(random.Random(8), names=NAMES)
+    names = [g.military_body().render() for _ in range(3000)]
+    assert not [n for n in names if re.search(r"Пенсійного фонду|Національної поліції|соціального захисту населення", n)]
+    assert not g.used["body_treasury_social"]
+
+
 # ---- «other» and the repeat rule -------------------------------------------------------------------------------------
 def test_other_is_always_an_institution():
     g = InfoGenerator(random.Random(4))
@@ -115,8 +159,9 @@ def test_only_a_labelled_institution_asks_for_another_fill(monkeypatch):
     for value, expected in [(("other", MASK), False), (("other", {}), False), (("org", {"org_kind": "official", "mask": True}), False),
                             (("org", {"org_kind": "unit", "mask": True}), False), (("quoted", {"quote_kind": "person", "mask": True}), False),
                             (("quoted", {"quote_kind": "unknown", "mask": True}), False), (("dob", {}), False), (("date_event", MASK), False),
+                            (("quoted", {"quote_kind": "company"}), False), (("quoted", {"quote_kind": "bank"}), False),
                             (("org", {}), True), (("org", {"org_kind": "holder"}), True), (("military_name", {}), True),
-                            (("quoted", {"quote_kind": "company"}), True), (("quoted", {"quote_kind": "formation"}), True)]:
+                            (("quoted", {"quote_kind": "formation"}), True)]:
         _force(monkeypatch, {1: value})
         assert run.has_org_info(doc) is expected, value
 
@@ -148,8 +193,11 @@ def test_fill_statistics_count_masked_values_and_kinds(monkeypatch):
     f = run.Filler(seed=1)
     f.fill(_doc(raw))
     want = {"info_org": 2, "info_quoted": 2, "info_date_event": 1, "info_masked_org": 1, "info_masked_quoted": 1, "info_masked_date_event": 1,
-            "info_orgkind_holder": 1, "info_orgkind_official": 1, "info_quotekind_bank": 1, "info_quotekind_person": 1}
-    assert {k: v for k, v in f.stats.items() if k.startswith("info_") and not k.startswith("info_org_")} == want
+            "info_orgkind_holder": 1, "info_orgkind_official": 1, "info_quotekind_bank": 1, "info_quotekind_person": 1,
+            "info_civil_masked_quoted": 1}  # the bank; a holder that is not a military body is counted the same way
+    got = {k: v for k, v in f.stats.items() if k.startswith("info_") and not k.startswith("info_org_")}
+    civil_holder = {k: got.pop(k) for k in ("info_civil_masked_org", "info_civil_company", "info_civil_civil") if k in got}
+    assert got == want and sum(civil_holder.values()) in (0, 2)
 
 
 def test_report_tells_masked_placeholders_and_kinds(monkeypatch, tmp_path, capsys):
@@ -359,7 +407,7 @@ def test_a_body_named_in_the_decision_is_drawn_again():
              "Державна прикордонна служба України", "Служба безпеки України")
     without = [plain.institution(military=True).render() for _ in range(500)]
     with_check = [checked.institution(military=True, seen=Seen(text)).render() for _ in range(500)]
-    assert sum(n in named for n in without) > 40  # one draw in ten is a body the decision names
+    assert sum(n in named for n in without) > 25  # about one draw in fifteen is a body the decision names
     assert not any(n in named for n in with_check)
     assert checked.drawn["redraw"] >= sum(n in named for n in without) and not checked.drawn["collision_kept"]
 
@@ -389,10 +437,10 @@ def test_the_fill_step_never_labels_a_name_the_decision_has_in_the_open(monkeypa
     open_names = ("Міністерств[оа] оборони України", "Генеральн(?:ий|ого) штабу? Збройних Сил України", "ТЦК та СП", "Національн(?:а|ої) гварді[яї] України")
     for seed in range(60):
         out = run.Filler(seed=seed).fill(_doc(raw, doc_id=str(seed)))
-        values = [_info(out, i)[0] for i in (1, 2, 3)]
+        *values, formation = _filled(out)
         assert not any(re.fullmatch(rx, v) for rx in open_names for v in values), values
         assert len(set(values)) == 3  # nor the same body for two placeholders
-        assert _info(out, 4)[0] not in ("Захід", "Південь", "Схід", "Центр")
+        assert _info(out, 4) == [formation] and formation not in ("Захід", "Південь", "Схід", "Центр")
         assert out == run.Filler(seed=seed).fill(_doc(raw, doc_id=str(seed)))
 
 
@@ -433,10 +481,11 @@ def test_the_fill_step_labels_known_quoted_kinds_and_masks_the_rest(monkeypatch)
                          4: ("quoted", {"quote_kind": "company"}), 5: ("quoted", {"quote_kind": "person", "mask": True}),
                          6: ("quoted", {"quote_kind": "unknown", "mask": True})})
     out = run.Filler(seed=6).fill(_doc(raw))
-    bank, formation, hospital, company = (_info(out, i)[0] for i in (1, 2, 3, 4))
+    bank, formation, hospital, company, surname, unknown = _filled(out)
     assert bank.lower() in {name.lower() for _, name in BANKS} and formation in FORMATION_NAMES
     assert re.search(r"лікарня|поліклініка|диспансер|допомоги", hospital) and company
-    surname, unknown = _info(out, 5, "masks")
+    # the formation is the only label; the bank, the hospital and the company are not personal data
+    assert _info(out, 2) == [formation] and _civil(out) == [bank, hospital, company] and not any(_info(out, i) for i in (1, 3, 4))
     assert re.fullmatch(r"[А-ЯІЇЄҐ][а-яіїєґ'’-]+(?:-[А-ЯІЇЄҐ][а-яіїєґ'’]+)?", surname) and unknown and not _info(out, 5) and not _info(out, 6)
     for span in out["labels"][1:] + out["masks"]:  # every value stands bare between the quotes of the text
         assert out["text"][span["start"] - 1] == "«" and out["text"][span["end"]] == "»"
@@ -537,6 +586,9 @@ def test_web_addresses_follow_the_words_before_them():
 def test_a_short_name_is_built_from_the_body_before_the_bracket(antecedent, expected):
     g = OrgGenerator(random.Random(5), names={})
     got = {str(g.short_for(antecedent)) for _ in range(20)}
+    if expected is not None:  # the kind of the body decides whether its short name is a label
+        civil = "Пенсійного" in antecedent or "Товариства" in antecedent
+        assert g.last_kind == ("civil" if "Пенсійного" in antecedent else "company" if civil else "military")
     assert got == {"None"} if expected is None else all(re.fullmatch(expected, v) for v in got), got
 
 
@@ -553,11 +605,13 @@ def test_the_fill_step_writes_the_short_name_of_the_body_before_it(monkeypatch):
         assert re.fullmatch(rf"(в/ч|ВЧ|військова частина) {code}", _info(out, 1)[0])
         # a body with no usual short name: the random short name is a mask at every mention, a full name stays a label
         assert not _info(out, 4) and len([m for m in out["masks"] if m["reason"] == "info_unsure"]) == 2
-        full, short = _info(out, 2)[0], _info(out, 3)
-        assert len(short) == 2 and len(set(short)) == (1 if f.stats["info_short_from_antecedent"] == 2 else len(set(short)))
+        full, short = _info(out, 2), _info(out, 3)
+        assert len(full) + len(short) + len(_civil(out)) == 3  # a body that is not military is masked, and so is its short name
         if f.stats["info_short_from_antecedent"] == 2:  # the body drawn for ІНФОРМАЦІЯ_2 has a usual short name
-            built += 1
-            assert short[0] != full and len(short[0]) < len(full)
+            assert len(short) == (2 if full else 0)
+            if full:
+                built += 1
+                assert len(set(short)) == 1 and short[0] != full[0] and len(short[0]) < len(full[0])
     assert built > 5
 
 
@@ -629,7 +683,7 @@ def test_an_institution_inside_the_quotes_of_the_text_is_its_bare_name(monkeypat
     with_quotes = 0
     for seed in range(60):
         out = run.Filler(seed=seed).fill(_doc(raw, doc_id=str(seed), kind="ГПК"))
-        first, quoted, third = _info(out, 1)
+        first, quoted, third = _info(out, 1) or _civil(out)
         with_quotes += "«" in first or '"' in first
         assert not re.search(r"[«»\"]", quoted)
         if "«" in first or '"' in first:

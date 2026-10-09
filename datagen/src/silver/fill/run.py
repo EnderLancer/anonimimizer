@@ -26,11 +26,17 @@ INFO_ORG_FILLS = {"base": 1, "large": 2}[VARIANT]
 INFO_ORG_SUBTYPES = {"org", "quoted", "military_name"}
 # names in the quotes of the text that are labelled; a surname or a name of unknown kind is masked
 QUOTE_KINDS = ("company", "bank", "formation", "institution", "person", "unknown")
-LABELLED_QUOTES = {"company", "bank", "formation", "institution"}
+# … and only the name of a military formation: a company, a bank, a hospital or a school is not personal data
+LABELLED_QUOTES = {"formation"}
+CIVIL_QUOTES = {"company", "bank", "institution"}
 # sub-types whose value is never a label, whatever the hints say (section 2 of the v6 specification): the rule that
 # finds them is unreliable or the kind of the hidden value is not known
 ALWAYS_MASKED = {"date_event", "ident", "nick", "place", "other"}
 MASK_REASON = "info_unsure"  # a generated value of uncertain kind: it makes the text read naturally, the loss ignores it
+# The task statement lists «назва військової частини» under ІНФОРМАЦІЯ; the name of a civil body or a company identifies no
+# natural person. Clerks hide such names now and then, and the same names stand open in most decisions, so the value is
+# neither a label nor «not personal data»: a mask.
+CIVIL_REASON = "info_civil_org"
 _MILITARY = re.compile(r"(військов|оборони|ТЦК|комплектування|мобілізац|грошового забезпечення)", re.I)
 _COMMERCIAL = re.compile(r"(господарськ\w+\s+суд|\bГПК\b)", re.I)
 _SOCIAL = re.compile(r"(пенсі[йяюї]|соціальн\w+\s+(?:захист|допомог|виплат)|державн\w+\s+допомог|інвалідн)", re.I)
@@ -58,6 +64,8 @@ def resolve_subtype(st: str, hints: dict) -> tuple[str, dict]:
         hints["quote_kind"] = kind if kind in QUOTE_KINDS else "unknown"
         if hints["quote_kind"] not in LABELLED_QUOTES:
             hints["mask"] = True
+            if hints["quote_kind"] in CIVIL_QUOTES:
+                hints["reason"] = CIVIL_REASON
     if st == "org":
         kind = hints.get("org_kind", "party")
         hints["org_kind"] = kind if kind in ORG_KINDS else "party"
@@ -228,10 +236,14 @@ class Filler:
                             v = self.info.generate(st, hints, last_person, date_style, org_ctx, state, left, right, idx)
                     else:
                         v = self.info.generate(st, hints, last_person, date_style, org_ctx, state, left, right, idx)
+                    if st == "org" and not hints["mask"] and self.info.org_gen.last_kind in ("civil", "company"):
+                        # the body that was drawn is not a military one: every mention of it is masked
+                        st, hints = info_sub[idx] = (st, {**hints, "mask": True, "reason": CIVIL_REASON})
+                        self.stats[f"info_civil_{self.info.org_gen.last_kind}"] += 1
                     infos[idx] = (st, v, hints)
                     self.stats[f"info_{st}"] += 1
                     if hints["mask"]:
-                        self.stats[f"info_masked_{st}"] += 1
+                        self.stats[f"info_civil_masked_{st}" if hints.get("reason") == CIVIL_REASON else f"info_masked_{st}"] += 1
                     if st == "org":
                         self.stats[f"info_orgkind_{hints['org_kind']}"] += 1
                     if st == "quoted":
@@ -242,7 +254,7 @@ class Filler:
                         self.stats[f"date_doc_style_{date_style}"] += 1
                 v = infos[idx][1]
                 if hints["mask"]:  # every mention of the placeholder: the value is one per index, and so is its doubt
-                    mask_reason = MASK_REASON
+                    mask_reason = hints.get("reason", MASK_REASON)
                 # an institution is declined by the case its context asks for, like a person's name
                 value = v.render(guess_org_case(left)) if isinstance(v, Org) else v
                 if isinstance(v, Org) and inside_quotes(left, right):

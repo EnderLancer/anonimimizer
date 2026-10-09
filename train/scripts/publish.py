@@ -29,8 +29,9 @@ def find_model_dir(path: Path) -> Path:
     sys.exit(f"no model in {path}: expected config.json and one of {', '.join(WEIGHTS)}")
 
 
-def model_card(model_dir: Path, repo: str, license_id: str | None = None) -> str:
-    """A minimal card: base model from the run's config.json next to `model/`, entity types from the model config."""
+def model_card(model_dir: Path, repo: str, license_id: str | None = None, note: str | None = None) -> str:
+    """A minimal card: base model from the run's config.json next to `model/`, entity types from the model config,
+    `note` as a paragraph of its own (the training data and the credits its sources ask for)."""
     run_config = model_dir.parent / "config.json"
     base = json.loads(run_config.read_text(encoding="utf-8")).get("model") if run_config.exists() else None
     labels = json.loads((model_dir / "config.json").read_text(encoding="utf-8")).get("id2label", {}).values()
@@ -43,6 +44,8 @@ def model_card(model_dir: Path, repo: str, license_id: str | None = None) -> str
              f"Token classification model that finds personal data in Ukrainian court decisions for pseudonymization{source}."]
     if types:
         lines += ["", "Entity types: " + ", ".join(f"`{t}`" for t in types) + "."]
+    if note:
+        lines += ["", note.strip()]
     return "\n".join(lines) + "\n"
 
 
@@ -54,6 +57,8 @@ def main() -> None:
     ap.add_argument("--private", action="store_true", help="private repo; without it the repo is made public, also if it existed as private")
     ap.add_argument("--license", default="mit", help="licence id for the model card (used only when the card is created); the task rules "
                     "ask for an open licence, mit is the one of the training corpus lang-uk/court-decisions-uk and of the wechsel base model")
+    ap.add_argument("--note", default=None, help="a paragraph for the model card (used only when the card is created), e.g. the training "
+                    "data and the credit its sources ask for")
     ap.add_argument("--message", default=None, help="commit message")
     a = ap.parse_args()
 
@@ -76,7 +81,7 @@ def main() -> None:
     print(f"uploading {model_dir} -> {repo} ({'private' if a.private else 'public'})", file=sys.stderr)
     api.upload_folder(folder_path=str(model_dir), repo_id=repo, commit_message=a.message or f"Upload {repo.split('/')[-1]}")
     if not api.file_exists(repo, "README.md"):
-        api.upload_file(path_or_fileobj=model_card(model_dir, repo, a.license).encode("utf-8"), path_in_repo="README.md",
+        api.upload_file(path_or_fileobj=model_card(model_dir, repo, a.license, a.note).encode("utf-8"), path_in_repo="README.md",
                         repo_id=repo, commit_message="Add model card")
     print(f"https://huggingface.co/{repo}")
 

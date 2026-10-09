@@ -95,6 +95,9 @@ table - only the names do. A real body is declined like a composed one (`real_or
 Both registers are published under Creative Commons Attribution: name the Treasury and the Ministry of Justice when the
 table or a dataset built with it is published. `REPORT.md` shows the share of names from each source.
 
+- **v7** (2026-10-09): only a military body is an ІНФОРМАЦІЯ label; civil bodies, companies, banks and institutions in
+  anonymised slots are masked (reason `info_civil_org`). See «Data v7» below.
+
 ## Variants
 
 `--variant` chooses the corpus mix and the output folder; every step accepts it.
@@ -232,6 +235,26 @@ of slot (`info_orgkind_<kind>`), the kinds of quoted name (`info_quotekind_<kind
 (`org_drawn_<slot>_<military|civil|company>`: the body that was kept; `org_drawn_other_…` for a placeholder no rule typed),
 the redraws (`org_drawn_redraw`, `org_drawn_collision_kept`) and the short names built from the body before the bracket
 (`info_short_from_antecedent`).
+
+## Data v7: only a military body is an ІНФОРМАЦІЯ label
+
+The task statement lists under ІНФОРМАЦІЯ a date of birth or death, an e-mail, a URL, a nickname and «назва військової частини».
+Clerks also hide the names of civil bodies, companies, banks and hospitals now and then, and data v6 labelled the values
+generated for those slots (about 6 % of the labelled ІНФОРМАЦІЯ placeholders). Such a name identifies no natural person, and
+the same names stand open in most decisions, so a label there contradicts both the statement and the rest of the corpus.
+
+- A slot of the sub-type `org` is filled as before, by the mix of kinds the audit measured (`KIND_MIX`). When the body that was
+  drawn is a civil one or a company, every mention of the placeholder is a mask with the reason `info_civil_org`; a military
+  body (a unit, a ТЦК, a ministry or command of the defence forces, a military medical commission, a КЕВ) stays a label.
+- A name in quotes is a label only for a military formation (`LABELLED_QUOTES`); a company, a bank, a hospital, a school or a
+  penal institution is masked with the same reason.
+- A short name after «далі -» follows the body it abbreviates: «ГУ ПФУ в … області» and «ТОВ «…»» are masked.
+- `military_body()` no longer draws the Pension Fund, the police or a social-protection department (6 % of its draws in v6);
+  these come from `civil_body()` only.
+- `fill_stats.json` and `REPORT.md` count them apart: `info_civil_masked_<subtype>`, `info_civil_<civil|company>`.
+
+The rule comes from the wording of the task statement, not from the test set. The v6 files are in `data/silver/v6/` and
+`data/silver_large/v6/`.
 
 ## Layout
 

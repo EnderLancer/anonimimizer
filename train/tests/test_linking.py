@@ -308,7 +308,8 @@ def test_declined_and_hyphenated_settlements():
 
 
 def test_house_numbers_and_street_names():
-    assert clusters(A, "м. Буча, вул. Лісова, 1-2", "м. Буча, вул. Лісова, 12", "м. Буча, вул. Лісова, 1-А", "м. Буча, вул. Лісова, 1а") == [1, 2, 3, 3]
+    assert clusters(A, "м. Буча, вул. Лісова, 1-2", "м. Буча, вул. Лісова, 12", "м. Буча, вул. Лісова, 1-А",
+                    "м. Буча, вул. Лісова, 1а") == [1, 2, 3, 3]
     assert clusters(A, "м. Буча, вул. Героїв Майдану, 5", "м. Буча, вул. Героїв України, 5", "Україна, м. Буча, вулиця Героїв Майдану, 5",
                     "м. Буча, вул. Героїв України, буд. 5, Україна") == [1, 2, 1, 2]
     # A street named after a person: with the first name, with its initial, by the surname alone.
@@ -454,19 +455,30 @@ def test_many_mentions_of_few_persons_are_fast():
     assert time.perf_counter() - started < 5  # about 0.1 s
 
 
-def test_many_different_persons_stay_within_seconds():
-    # Linking is quadratic in the number of different persons of one document: 3000 of them take about 20 s, far more
-    # than any decision has. 400 (26 times a usual decision) must stay well under the time of the whole file.
-    surnames = ("Гнатюк", "Савчук", "Мороз", "Бойко", "Левченко", "Поліщук", "Мазур", "Литвин", "Коваль", "Шевченко",
-                "Ткаченко", "Кравець", "Олійник", "Шевчук", "Бондар", "Мельник", "Кучер", "Лисенко", "Руденко", "Марченко")
-    names = ("Олег", "Назар", "Тарас", "Іван", "Петро")
-    fathers = ("Іванович", "Петрович", "Маркович", "Олегович")
+def test_many_different_persons_are_fast_too():
+    # Without the index of name stems every mention is compared with every person: 2000 different persons then take
+    # more than ten seconds, with it a fraction of one. The clusters are the same either way.
+    surnames = ("Гнатюк Савчук Мороз Бойко Левченко Поліщук Мазур Литвин Коваль Шевченко Ткаченко Кравець Олійник Шевчук Бондар "
+                "Мельник Кучер Лисенко Руденко Марченко Заєць Притула Сорока Ковальський Кузнецов Діброва Седих Стогній Гмиря "
+                "Петренко Іваненко Савченко Романюк Остапчук Довженко Вербицький Садовий Головня Щербина Тичина").split()
+    names = "Олег Назар Тарас Іван Петро Андрій Роман Богдан Степан Юрій".split()
+    fathers = "Іванович Петрович Маркович Олегович Андрійович".split()
     people = [f"{s} {n} {f}" for s in surnames for n in names for f in fathers]
     random.Random(3).shuffle(people)
     text, spans, _ = document([[p, 0] for p in people])
     started = time.perf_counter()
-    assert len(set(assign(text, spans))) == len(people) == 400
+    assert len(set(assign(text, spans))) == len(people) == 2000
     assert time.perf_counter() - started < 5  # about 0.3 s
+    # The index only leaves out persons that cannot fit: the same partition as when every person is a candidate.
+    few = people[:150] + [p.split()[0] for p in people[:60]] + [f"{p.split()[1]} {p.split()[0]}а" for p in people[:60]]
+    text, spans, _ = document([[p, 0] for p in few])
+    indexed = assign(text, spans)
+    original = linking._HeadIndex.candidates
+    try:
+        linking._HeadIndex.candidates = lambda self, m: sorted(self.words)
+        assert assign(text, spans) == indexed
+    finally:
+        linking._HeadIndex.candidates = original
 
 
 # ----------------------------------------------------------------------------------------------------------------------

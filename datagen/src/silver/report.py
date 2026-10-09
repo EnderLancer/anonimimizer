@@ -46,9 +46,10 @@ def run_report() -> None:
             return ", ".join(f"{k} {v / total:.1%}" for k, v in sel.items()) if total else "none"
 
         # the sub-type counters only: info_<subtype>, without the breakdowns that share the prefix
-        info_other = ("info_org_", "info_masked_", "info_orgkind_", "info_quotekind_", "info_short_")
+        info_other = ("info_org_", "info_masked_", "info_orgkind_", "info_quotekind_", "info_short_", "info_civil_")
         n_info = sum(v for k, v in s.items() if k.startswith("info_") and not k.startswith(info_other)) or 1
         n_masked = sum(v for k, v in s.items() if k.startswith("info_masked_"))
+        n_civil = sum(v for k, v in s.items() if k.startswith("info_civil_masked_"))
 
         n_addr = sum(v for k, v in s.items() if k.startswith("addr_kind_")) or 1
         lines += ["", "## Synthetic values (fill step, before excerpts and the split)", "",
@@ -62,6 +63,9 @@ def run_report() -> None:
                   f"- ІНФОРМАЦІЯ placeholders by sub-type (labelled and masked together): {shares('info_', skip=info_other)}",
                   f"- ІНФОРМАЦІЯ placeholders whose value is masked, not labelled (reason info_unsure): {n_masked} of {n_info} "
                   f"({n_masked / n_info:.1%}); by sub-type: {shares('info_masked_') or 'none'}",
+                  f"- ІНФОРМАЦІЯ placeholders whose value is a civil body, a company, a bank or an institution: masked, not labelled "
+                  f"(reason info_civil_org): {n_civil} of {n_info} ({n_civil / n_info:.1%}); by sub-type: "
+                  f"{shares('info_civil_masked_') or 'none'}",
                   f"- institution slots (sub-type org) by kind of slot: {shares('info_orgkind_') or 'none'}",
                   f"- bodies kept for a party / short-name slot: {drawn('party')} / {drawn('short')}; for a holder slot: {drawn('holder')}; "
                   f"for a placeholder no rule typed (masked): {drawn('other')}; "
@@ -100,6 +104,9 @@ def run_report() -> None:
               "a value so that the text reads naturally - an institution where no "
               "rule matched - but the value is a mask (reason info_unsure), not a label: nothing is learnt from it, in either "
               "direction; the share of such placeholders is in the fill statistics above",
+              "- only a military body is a label (the task statement lists «назва військової частини» under ІНФОРМАЦІЯ): a civil "
+              "body, a company, a bank, a hospital or a school that stands in an anonymised slot identifies no natural person, and "
+              "the same names stand open in most decisions, so its value is a mask (reason info_civil_org) at every mention",
               "- a value is drawn at the first mention of its placeholder, with the hints of the last one that has the winning "
               "sub-type: where the mentions disagree (an institution that is also mentioned inside quotes, a bank named as a "
               "company elsewhere) the value fits one of them only; a birth date and a death date agree only when they stand next "
