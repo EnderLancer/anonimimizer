@@ -4,7 +4,7 @@ from urllib.parse import urlsplit
 
 import predict_trf as P
 
-SERVICE_FILTER_VERSION = 4
+SERVICE_FILTER_VERSION = 8
 
 # Match labels and complete values in the original text, independently of
 # detector boundaries. NER may return only a fragment of the full number.
@@ -87,9 +87,6 @@ INSTITUTION_WORD = re.compile(
 SUFFIX_GAP = re.compile(r"[\s,():—–-]*(?:(?:приватн\w*|державн\w*)\s+)?", re.I)
 LIST_GAP = re.compile(r"\s*[,;]\s*(?:(?:та|і)\s+)?", re.I)
 TOKENS = re.compile(r"[^\W\d_]+", re.U)
-CONTACT = re.compile(
-    r"(?:телефон\w*|тел\.|факс|email|e-mail|електронн\w+\s+пошт\w+)\s+"
-    r"(?:суду|канцелярії|прокуратури|нотаріальної\s+контори)\s*[:—–-]?\s*$", re.I)
 ADDRESS = re.compile(
     r"(?:адрес\w*\s+(?:суду|прокуратури|банку|канцелярії|нотаріальної\s+контори)|"
     r"(?:суд|прокуратура|банк|нотаріальна\s+контора)\s+(?:знаходиться|розташован\w*)"
@@ -120,6 +117,246 @@ WORK_ADDRESS = re.compile(r"\bробоч\w+\s+адрес\w*[^;.!?]{0,100}[:—�
 HEARING_ADDRESS = re.compile(
     r"\b(?:судов\w+\s+засідан\w*|залі\s+суду)"
     r"[^;!?]{0,180}\bза\s+адресою\s*:?\s*$", re.I)
+
+# Information exclusions use full source regions, not the boundaries returned
+# by NER/CRF. Context is anchored to a value; mere proximity is not evidence.
+EMAIL_LABEL = r"(?:email|e-mail|е-пошта|е-пош\.|електронн\w+\s+пошт\w+)"
+INFORMATION_CONTACT = re.compile(
+    rf"\b(?:{EMAIL_LABEL}|офіційн\w+\s+(?:сайт|вебсайт))\s+"
+    r"(?:суду|канцелярії|прокуратури|нотаріальної\s+контори|"
+    r"міністерства|департаменту|управління|міської\s+ради)\s*[:—–-]?\s*$", re.I)
+INSTITUTION_EMAIL_LABEL = re.compile(rf"\b{EMAIL_LABEL}\s*[:—–-]?\s*$", re.I)
+INSTITUTION_CONTACT_OWNER = re.compile(
+    r"(?<!\w)(?:[А-ЯІЇЄҐ][\w’'ʼ-]+\s+){0,4}"
+    r"(?i:(?:(?:окружна|районна|обласна|генеральна)\s+)?прокуратура|"
+    r"(?:сільська|селищна|міська|районна|обласна)\s+рада|"
+    r"(?:господарський|районний|міський|окружний|апеляційний|верховний)\s+суд)"
+    r"\s*\(")
+INFORMATION_PRIVATE = re.compile(
+    r"\b(?:особист\w*|приватн\w+\s+(?:email|e-mail|пошт\w*|акаунт\w*)|"
+    r"ОСОБА_\d+|РНОКПП|паспорт\w*|народжен\w*|народив\w*|нар\.|уродж\w*|"
+    r"помер\w*|смерт\w*|загинув\w*|акаунт\w*|логін\w*|нікнейм\w*)", re.I)
+INFORMATION_DATE_PREFIX = re.compile(
+    r"\b(?:дата\s+(?:ухвалення|прийняття|складання|виготовлення)\s+"
+    r"(?:рішення|ухвали|постанови)|дата\s+судового\s+засідання|"
+    r"(?:рішення|ухвала|постанова|наказ|закон)\s+від|"
+    r"судове\s+засідання\s+(?:призначено\s+на|відбудеться))\s*[:—–-]?\s*$", re.I)
+INFORMATION_ORG_PREFIX = re.compile(
+    r"\b(?:(?:найменування|назва)\s+(?:суду|установи|органу)|орган,?\s+що\s+видав\s+документ|"
+    r"документ\s+видано|видано\s+органом)\s*[:—–-]?\s*$", re.I)
+INFORMATION_MILITARY = re.compile(
+    r"\b(?:ТЦК|військов\w*|комплектування|прикордонн\w*)\b", re.I)
+# A structural name (ministry/department + country/region) also needs a
+# public-body marker. "Головне управління" by itself does not prove ownership.
+PUBLIC_AUTHORITY_MARKER = re.compile(
+    r"\b(?:Міністерств\w+|Державн\w+|Національн\w+|"
+    r"Пенсійн\w+\s+фонд\w+|Держ[а-яіїєґ]+|ДПС)\b", re.I)
+PUBLIC_AUTHORITY_NAME = re.compile(P.ORG_GOV.pattern, P.ORG_GOV.flags | re.I)
+PUBLIC_AUTHORITY_UNSAFE = re.compile(
+    r"\b(?:ТОВ|ПП|АТ|ПАТ|ПрАТ|компані\w*|приватн\w*|"
+    r"працівник\w*|співробітник\w*|керівник\w*|директор\w*|"
+    r"телефон\w*|email|паспорт\w*|РНОКПП)\b", re.I)
+AUTHORITY_REGION_SUFFIX = re.compile(
+    r"\s+(?:в|у)\s+(?:[а-яіїєґ’'ʼ-]+\s+){1,3}?област\w*\b", re.I)
+TCC_NAME = re.compile(
+    r"(?<![\w-])(?:[А-ЯІЇЄҐ][\w’'ʼ-]+\s+)?"
+    r"(?i:(?:районн\w+\s+)?територіальн\w+\s+центр\w*\s+"
+    r"комплектування\s+та\s+соціальної\s+підтримки|ТЦК(?:\s+та\s+СП)?)"
+    r"(?![\w-])")
+COURT_NAME = re.compile(
+    r"(?<!\w)(?:Верховн\w+\s+Суд\w*|(?:[А-ЯІЇЄҐ][\w’'ʼ-]+\s+){1,5}"
+    r"(?:районн\w+|міськ\w+|апеляційн\w+|окружн\w+|господарськ\w+|"
+    r"адміністративн\w+)\s+суд\w*)(?!\w)")
+BARE_COURT_URL = re.compile(
+    r"(?<![\w@./-])(?:[\w-]+\.)*(?:court|arbitr)\.gov\.ua(?![\w:-]|\.[\w-])"
+    r"(?:[/?#][^\s,;<>\"«»)]*)?", re.I)
+
+
+def information_context(text, start, end):
+    """Use the local clause, preserving dots in dates and domain names."""
+    pre = re.split(r"[;!?]|\n\s*\n|\.\s+(?=[А-ЯІЇЄҐA-Z])",
+                   text[max(0, start - 180):start])[-1]
+    after = re.split(r"[;!?]|\n|\.\s", text[end:end + 80])[0]
+    return pre, after
+
+
+def private_information_context(text, start, end):
+    pre, after = information_context(text, start, end)
+    # Postposed birth markers are common: "12.03.1980 року народження".
+    birth_suffix = re.match(r"\s*(?:(?:року|р\.)\s*)?(?:народження|р\.?\s*н\.)", after, re.I)
+    return bool(INFORMATION_PRIVATE.search(pre) or PARTY.search(pre)
+                or P.PERSONAL_CTX.search(pre) or birth_suffix
+                or PARTY.search(after) or INFORMATION_PRIVATE.search(after))
+
+
+def institution_contact_blocks(text):
+    """Bound contact ownership to the institution's balanced parentheses.
+
+    An institution can itself be a plaintiff. That outer role does not make
+    its general mailbox personal; individual roles inside the block still do.
+    """
+    blocks = []
+    for match in INSTITUTION_CONTACT_OWNER.finditer(text):
+        depth = 1
+        for end in range(match.end(), min(len(text), match.end() + 1200)):
+            if text[end] == "(":
+                depth += 1
+            elif text[end] == ")":
+                depth -= 1
+                if depth == 0:
+                    blocks.append((match.end(), end))
+                    break
+    return blocks
+
+
+def institution_email_reason(text, start, end, blocks):
+    for a, b in blocks:
+        if not a <= start < end <= b:
+            continue
+        # Inspect only this owner block, not the party title outside it.
+        body = text[a:b]
+        if (INFORMATION_PRIVATE.search(body) or PARTY.search(body)
+                or P.PERSONAL_CTX.search(body)):
+            continue
+        if INSTITUTION_EMAIL_LABEL.search(text[a:start]):
+            return "Email установи у блоці її реквізитів"
+    return None
+
+
+def official_information_link(value, is_email=False):
+    """Validate complete hosts; do not hide URLs carrying personal parameters."""
+    if is_email:
+        host = value.rsplit("@", 1)[-1].casefold()
+        if any(host == root or host.endswith("." + root)
+               for root in ("court.gov.ua", "arbitr.gov.ua")):
+            return "Офіційний сайт або email судової влади"
+        return None
+    try:
+        parsed = urlsplit(value if "://" in value else "//" + value)
+        host = parsed.hostname or ""
+        # Login links, user info and query parameters can identify a person.
+        if parsed.username is not None or parsed.port not in (None, 80, 443) or parsed.query:
+            return None
+    except ValueError:
+        return None
+    if re.search(r"(?:account|profile|user|login|cabinet|кабінет)", parsed.path, re.I):
+        return None
+    if any(host == root or host.endswith("." + root)
+           for root in ("court.gov.ua", "arbitr.gov.ua")) and not parsed.fragment:
+        return "Офіційний сайт або email судової влади"
+    if host == "zakon.rada.gov.ua" and re.fullmatch(r"/laws/show/[\w%./-]+", parsed.path):
+        return "Посилання на нормативний акт на офіційному сайті"
+    if (host == "gov.ua" or host.endswith(".gov.ua")) and parsed.path in ("", "/") and not parsed.fragment:
+        return "Офіційний сайт державної установи"
+    return None
+
+
+def service_information_regions(text):
+    """Find only explicit service information; uncertain values stay visible."""
+    regions = []
+    contact_blocks = institution_contact_blocks(text)
+    full_urls = list(P.URL.finditer(text))
+    urls = full_urls + list(BARE_COURT_URL.finditer(text))
+    for pattern, is_email in ((P.EMAIL, True), (P.URL, False), (BARE_COURT_URL, False)):
+        for match in pattern.finditer(text):
+            if is_email and any(m.start() <= match.start() < m.end() for m in urls):
+                continue
+            if pattern is BARE_COURT_URL and any(m.start() <= match.start() < m.end() for m in full_urls):
+                continue
+            value = match.group().rstrip(".,;)")
+            # P.URL includes final sentence dots; keep that source boundary so
+            # raw URL candidates and their contained fragments agree.
+            start, end = match.span()
+            if is_email:
+                reason = institution_email_reason(text, start, end, contact_blocks)
+                if reason:
+                    regions.append((start, end, reason))
+                    continue
+            if private_information_context(text, start, end):
+                continue
+            reason = official_information_link(value, is_email)
+            pre, _ = information_context(text, start, end)
+            if reason is None and INFORMATION_CONTACT.search(pre):
+                # Explicit institutional context permits an email on another
+                # domain. For links, still reject user data and spoofed hosts.
+                if is_email:
+                    reason = "Контакт установи за явним контекстом"
+            if reason:
+                regions.append((start, end, reason))
+    # A model can label an institutional phone as INFORMATION rather than
+    # NUMBER. Keep the same explicit contact rule for either label.
+    for start, end, reason in service_number_regions(text):
+        if (reason == "Телефон або факс установи за явним контекстом"
+                and not private_information_context(text, start, end)):
+            regions.append((start, end, "Контакт установи за явним контекстом"))
+    for match in P.DATE_ALL_RE.finditer(text):
+        start, end = match.span()
+        pre, _ = information_context(text, start, end)
+        if not private_information_context(text, start, end) and INFORMATION_DATE_PREFIX.search(pre):
+            regions.append((start, end, "Дата процесуального або офіційного документа / засідання"))
+    regions.extend(service_authority_regions(text))
+    for pattern in (P.ORG_GOV, COURT_NAME):
+        for match in pattern.finditer(text):
+            start, end = match.span()
+            if (private_information_context(text, start, end)
+                    or INFORMATION_MILITARY.search(match.group())):
+                continue
+            pre, after = information_context(text, start, end)
+            # A postposed participant role also makes an institution ambiguous.
+            if re.match(r"\s*[,—–:-]?\s*(?:позивач|відповідач|заявник|скаржник)\w*\b", after, re.I):
+                continue
+            if INFORMATION_ORG_PREFIX.search(pre):
+                regions.append((start, end, "Назва установи в реквізитах або як органу видачі документа"))
+            else:
+                line_start = text.rfind("\n", 0, start) + 1
+                line_end = text.find("\n", end)
+                if line_end == -1:
+                    line_end = len(text)
+                # Only a standalone first line proves letterhead, not a party
+                # mention anywhere in the first 240 characters.
+                if (not text[:line_start].strip() and not text[line_start:start].strip()
+                        and not text[end:line_end].strip(" \t\r.:—–-")
+                        and line_end < len(text)):
+                    regions.append((start, end, "Назва установи в шапці документа"))
+    return regions
+
+
+def service_authority_regions(text):
+    """Recognize classes of public names; party roles do not change the name.
+
+    P.ORG_GOV supplies grammatical boundaries and case forms. Public markers
+    distinguish governmental management from management of private companies.
+    """
+    regions = []
+    for pattern, reason in (
+        (PUBLIC_AUTHORITY_NAME, "Назва держоргану за структурою та ознаками державної установи"),
+        (TCC_NAME, "Назва територіального центру комплектування та соціальної підтримки"),
+    ):
+        for match in pattern.finditer(text):
+            start, end = match.span()
+            if pattern is PUBLIC_AUTHORITY_NAME:
+                suffix = AUTHORITY_REGION_SUFFIX.match(text, end)
+                if suffix:
+                    end = suffix.end()
+                if not PUBLIC_AUTHORITY_MARKER.search(text[start:end]):
+                    continue
+                # TCC is explicitly allowed by audit policy; other military
+                # formations retain the conservative treatment.
+                if INFORMATION_MILITARY.search(text[start:end]):
+                    continue
+            value = text[start:end]
+            if (PUBLIC_AUTHORITY_UNSAFE.search(value) or INFORMATION_PRIVATE.search(value)
+                    or text[max(0, start - 1):start] in ('«', '"')):
+                continue
+            regions.append((start, end, reason))
+    return regions
+
+
+def service_information_reason(text, start, end, regions=None):
+    """Classify this occurrence, including contained model fragments."""
+    if regions is None:
+        regions = service_information_regions(text)
+    return next((reason for a, b, reason in regions if a <= start < end <= b), None)
 
 
 def service_address_reason(text, start, end, addresses, people=()):
@@ -212,6 +449,7 @@ def mark_service_candidates(text, candidates):
     people = [c for c in candidates if c["type"] == "ОСОБА"]
     number_regions = service_number_regions(text)
     protected_numbers = [m.span("value") for m in PRIVATE_NUMBER.finditer(text)]
+    information_regions = service_information_regions(text)
     address_reasons = {(c["start"], c["end"]): reason for c in addresses
                        if (reason := service_address_reason(text, c["start"], c["end"], addresses, people))}
     # Prefer full names to overlapping NER fragments for context association.
@@ -268,7 +506,6 @@ def mark_service_candidates(text, candidates):
     for c in candidates:
         c.update(excluded=False, exclusion_reason=None, role=None)
         s, e, kind, value = c["start"], c["end"], c["type"], c["value"]
-        pre = text[max(0, s - 140):s]
         if kind == "ОСОБА":
             key = name_key(value)
             # Reuse the anchor's decision for partial NER/CRF names, so a
@@ -292,15 +529,7 @@ def mark_service_candidates(text, candidates):
             if reason:
                 c.update(excluded=True, exclusion_reason=reason)
         elif kind == "ІНФОРМАЦІЯ":
-            # Exact host boundaries prevent court.gov.ua.evil.example matches.
-            url = value.rstrip(".,;)")
-            try:
-                host = urlsplit(url if "://" in url else "//" + url).hostname or ""
-            except ValueError:
-                host = ""
-            email_host = url.rsplit("@", 1)[-1].casefold() if "@" in url else ""
-            if any(h == "court.gov.ua" or h.endswith(".court.gov.ua") for h in (host, email_host)):
-                c.update(excluded=True, exclusion_reason="Офіційний сайт або email судової влади")
-            elif CONTACT.search(pre) and not P.PERSONAL_CTX.search(pre):
-                c.update(excluded=True, exclusion_reason="Контакт установи за явним контекстом")
+            reason = service_information_reason(text, s, e, information_regions)
+            if reason:
+                c.update(excluded=True, exclusion_reason=reason)
     return candidates

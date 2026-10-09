@@ -5,6 +5,7 @@ from pathlib import Path
 
 from additional_tasks.audit.audit_registry import candidates, write_report
 from additional_tasks.audit.service_filter import mark_service_candidates
+from additional_tasks.audit.service_filter import service_information_reason
 from ner_adapters import EntitySpan
 
 
@@ -216,6 +217,212 @@ class ServiceFilterTests(unittest.TestCase):
         self.assertFalse(detect(personal, [personal], "НОМЕР")[0]["excluded"])
         self.assertTrue(detect("номер справи № 123456", ["123456"], "НОМЕР")[0]["excluded"])
         self.assertFalse(detect("РНОКПП: 1234567890", ["1234567890"], "НОМЕР")[0]["excluded"])
+
+    def test_service_information_categories(self):
+        examples = (
+            ("E-mail прокуратури: office@example.com", "office@example.com"),
+            ("Телефон канцелярії: +380501234567", "+380501234567"),
+            ("Електронна пошта міністерства:\n office@example.com", "office@example.com"),
+            ("Офіційний сайт: https://minjust.gov.ua/", "https://minjust.gov.ua/"),
+            ("Веб-адреса: http://reyestr.court.gov.ua/.", "http://reyestr.court.gov.ua/."),
+            ("Сайт: court.gov.ua/", "court.gov.ua/"),
+            ("https://zakon.rada.gov.ua/laws/show/1402-19#Text", "https://zakon.rada.gov.ua/laws/show/1402-19#Text"),
+            ("Дата ухвалення рішення: 12.03.2024", "12.03.2024"),
+            ("Ухвала від 12 березня 2024 року", "12 березня 2024 року"),
+            ("Дата судового засідання — 2024-03-12", "2024-03-12"),
+            ("Судове засідання призначено на 12.03.2024", "12.03.2024"),
+            ("Орган, що видав документ: Міністерство юстиції України", "Міністерство юстиції України"),
+            ("Найменування установи: Міністерство юстиції України", "Міністерство юстиції України"),
+            ("Верховний Суд\nУХВАЛА", "Верховний Суд"),
+            ("Міністерство юстиції України\nРеквізити установи", "Міністерство юстиції України"),
+        )
+        for text, value in examples:
+            with self.subTest(text=text):
+                c = detect(text, [value], "ІНФОРМАЦІЯ")[0]
+                self.assertTrue(c["excluded"])
+                self.assertTrue(c["exclusion_reason"])
+                self.assertEqual(text[c["start"]:c["end"]], value)
+
+    def test_private_and_ambiguous_information(self):
+        examples = (
+            ("Дата народження: 12.03.1980", "12.03.1980"),
+            ("Дата смерті: 12.03.2024", "12.03.2024"),
+            ("Ухвала від 12.03.1980 року народження", "12.03.1980"),
+            ("Народився 12.03.1980, ухвала від 12.03.2024", "12.03.2024"),
+            ("Зустріч відбулася 12.03.2024", "12.03.2024"),
+            ("Особистий email судді: inbox@ki.court.gov.ua", "inbox@ki.court.gov.ua"),
+            ("Email позивача: inbox@ki.court.gov.ua", "inbox@ki.court.gov.ua"),
+            ("inbox@ki.court.gov.ua — електронна пошта позивача", "inbox@ki.court.gov.ua"),
+            ("Акаунт: https://court.gov.ua/profile/123", "https://court.gov.ua/profile/123"),
+            ("Email адвоката: office@example.com", "office@example.com"),
+            ("Телефон адвоката: +380501234567", "+380501234567"),
+            ("https://court.gov.ua/?person=123", "https://court.gov.ua/?person=123"),
+            ("https://court.gov.ua.evil.example", "https://court.gov.ua.evil.example"),
+            ("court.gov.ua.evil.example", "court.gov.ua.evil.example"),
+            ("court.gov.ua?person=123", "court.gov.ua?person=123"),
+            ("court.gov.ua:8080", "court.gov.ua"),
+            ("https://evil.example/?next=court.gov.ua", "court.gov.ua"),
+            ("https://court.gov.ua/?email=inbox@ki.court.gov.ua", "inbox@ki.court.gov.ua"),
+            ("court.gov.ua?email=inbox@ki.court.gov.ua", "inbox@ki.court.gov.ua"),
+            ("https://court.gov.ua/#person123", "https://court.gov.ua/#person123"),
+            ("https://minjust.gov.ua.evil.example/", "https://minjust.gov.ua.evil.example/"),
+            ("https://minjust.gov.ua/profile/123", "https://minjust.gov.ua/profile/123"),
+            ("https://zakon.rada.gov.ua/laws/show/1402-19?person=123", "https://zakon.rada.gov.ua/laws/show/1402-19?person=123"),
+            ("Найменування установи: Військовий навчальний центр «Десна»", "Військовий навчальний центр «Десна»"),
+            ("Нікнейм: @example_user", "@example_user"),
+            ("Виконавче провадження № 12345678", "12345678"),
+        )
+        for text, value in examples:
+            with self.subTest(text=text):
+                self.assertFalse(detect(text, [value], "ІНФОРМАЦІЯ")[0]["excluded"])
+
+    def test_information_contained_fragments_and_crossing_spans(self):
+        examples = (
+            ("Сайт https://reyestr.court.gov.ua/Review/123", "https://reyestr.court.gov.ua/Review/123", "court.gov.ua"),
+            ("E-mail прокуратури: office@example.com", "office@example.com", "example"),
+            ("Ухвала від 12.03.2024", "12.03.2024", "2024"),
+            ("Орган, що видав документ: Міністерство юстиції України", "Міністерство юстиції України", "юстиції"),
+        )
+        for text, full, fragment in examples:
+            with self.subTest(text=text):
+                result = detect(text, [full, fragment], "ІНФОРМАЦІЯ")
+                self.assertTrue(all(c["excluded"] for c in result))
+                self.assertEqual(result[0]["exclusion_reason"], result[1]["exclusion_reason"])
+                self.assertIsNone(service_information_reason(text, 0, len(text)))
+
+    def test_information_repeats_are_occurrence_local(self):
+        text = "Ухвала від 12.03.2024. Дата народження: 12.03.2024"
+        spans = [{"start": m, "end": m + 10, "value": text[m:m + 10], "type": "ІНФОРМАЦІЯ"}
+                 for m in (text.index("12.03.2024"), text.rindex("12.03.2024"))]
+        self.assertEqual([c["excluded"] for c in mark_service_candidates(text, spans)], [True, False])
+        text = "Email прокуратури: office@example.com; Email позивача: office@example.com"
+        spans = [{"start": m, "end": m + len("office@example.com"), "value": "office@example.com", "type": "ІНФОРМАЦІЯ"}
+                 for m in (text.index("office@example.com"), text.rindex("office@example.com"))]
+        self.assertEqual([c["excluded"] for c in mark_service_candidates(text, spans)], [True, False])
+
+    def test_information_context_does_not_cross_sentence(self):
+        text = "Дата народження: ІНФОРМАЦІЯ_1. Ухвала від 12.03.2024"
+        self.assertTrue(detect(text, ["12.03.2024"], "ІНФОРМАЦІЯ")[0]["excluded"])
+        text = "Email прокуратури: ІНФОРМАЦІЯ_1. Контакт: office@example.com"
+        self.assertFalse(detect(text, ["office@example.com"], "ІНФОРМАЦІЯ")[0]["excluded"])
+
+    def test_institution_contact_examples_from_registry(self):
+        examples = (
+            ("вул. Володимира Винниченка 1, м. Дніпро, 49027\n"
+             "E-mail: inbox@dp.arbitr.gov.ua, тел. (056) 377-18-49, fax (056) 377-38-63",
+             ["inbox@dp.arbitr.gov.ua", "arbitr.gov.ua"]),
+            ("Шепетівська окружна прокуратура (вул. Сергія Оврашка, 43, м. Шепетівка, 30400; "
+             "е-пошта: shepetiv_oprok@khmel.gp.gov.ua)", ["shepetiv_oprok@khmel.gp.gov.ua"]),
+            ("3 - позивачу - Ленковецька сільська рада (вул. Коськівецька, 55, "
+             "с. Ленківці Шепетівського району Хмельницької області, 30443; "
+             "е-пош. lenkovecka-rada@ukr.net)", ["lenkovecka-rada@ukr.net"]),
+            ("ГОСПОДАРСЬКИЙ СУД ЖИТОМИРСЬКОЇ ОБЛАСТІ\n\n"
+             "майдан Путятинський, 3/65, м. Житомир, 10002, тел. (0412) 48 16 20,\n"
+             "e-mail: inbox@zt.arbitr.gov.ua, web: https://zt.arbitr.gov.ua,\nкод ЄДРПОУ 03499916",
+             ["inbox@zt.arbitr.gov.ua", "https://zt.arbitr.gov.ua"]),
+            ("Е-пошта прокуратури: office@example.com", ["office@example.com"]),
+            ("Ленковецька сільська рада (тел. (038) 123-45-67; е-пошта: office@ukr.net)",
+             ["office@ukr.net"]),
+        )
+        for text, values in examples:
+            with self.subTest(text=text):
+                result = detect(text, values, "ІНФОРМАЦІЯ")
+                self.assertTrue(all(c["excluded"] for c in result))
+                self.assertTrue(all(c["exclusion_reason"] for c in result))
+
+    def test_institution_contact_ownership_does_not_hide_private_contacts(self):
+        examples = (
+            ("Особистий email судді: inbox@zt.arbitr.gov.ua", "inbox@zt.arbitr.gov.ua"),
+            ("https://zt.arbitr.gov.ua.evil.example", "https://zt.arbitr.gov.ua.evil.example"),
+            ("inbox@zt.arbitr.gov.ua.evil.example", "inbox@zt.arbitr.gov.ua.evil.example"),
+            ("Ленковецька сільська рада повідомила email позивача: person@ukr.net", "person@ukr.net"),
+            ("Ленковецька сільська рада (особистий е-пош. person@ukr.net)", "person@ukr.net"),
+            ("Ленковецька сільська рада (е-пошта позивача: person@ukr.net)", "person@ukr.net"),
+            ("Ленковецька сільська рада (е-пошта: person@ukr.net — особистий контакт)", "person@ukr.net"),
+            ("Адвокат ОСОБА_1 (е-пошта: person@ukr.net)", "person@ukr.net"),
+            ("Ленковецька сільська рада (е-пошта: office@ukr.net", "office@ukr.net"),
+            ("Ленковецька сільська рада (адреса: АДРЕСА_1); е-пош. person@ukr.net", "person@ukr.net"),
+        )
+        for text, value in examples:
+            with self.subTest(text=text):
+                self.assertFalse(detect(text, [value], "ІНФОРМАЦІЯ")[0]["excluded"])
+
+    def test_same_email_has_separate_institutional_and_personal_owners(self):
+        text = "Позивач — Ленковецька сільська рада (е-пош. contact@ukr.net); е-пошта позивача ОСОБА_1: contact@ukr.net"
+        value = "contact@ukr.net"
+        spans = [{"start": s, "end": s + len(value), "type": "ІНФОРМАЦІЯ", "value": value}
+                 for s in (text.index(value), text.rindex(value))]
+        self.assertEqual([c["excluded"] for c in mark_service_candidates(text, spans)], [True, False])
+
+    def test_civil_authorities_are_service_even_as_parties(self):
+        examples = (
+            ("Позивач: Головне управління Державної податкової служби в Івано-Франківській області,", "Головне управління Державної податкової служби в Івано-Франківській області"),
+            ("1) Головного управління Держгеокадастру у Донецькій області;", "Головного управління Держгеокадастру у Донецькій області"),
+            ("в особі Управління Східного офісу Держаудитслужби в Донецькій області до відповідачів:", "Управління Східного офісу Держаудитслужби в Донецькій області"),
+            ("перевіривши матеріали касаційної скарги Головного управління ДПС у Харківській області", "Головного управління ДПС у Харківській області"),
+            ("Відповідач: Головному управлінню ДПС у Полтавській області", "Головному управлінню ДПС у Полтавській області"),
+        )
+        for text, value in examples:
+            with self.subTest(text=text):
+                result = detect(text, [value], "ІНФОРМАЦІЯ")[0]
+                self.assertTrue(result["excluded"])
+                self.assertTrue(result["exclusion_reason"])
+
+    def test_civil_authority_regions_do_not_cover_personal_data(self):
+        text = "Головне управління ДПС у Харківській області, працівник Петренко Іван Іванович, email person@example.com, народився 12.03.1980"
+        values = ["Головне управління ДПС у Харківській області", "ДПС", "Харківській області", "person@example.com", "12.03.1980", "Петренко Іван Іванович", "Головне управління ДПС у Харківській області, працівник Петренко Іван Іванович"]
+        result = detect(text, values, "ІНФОРМАЦІЯ")
+        self.assertEqual([c["excluded"] for c in result], [True, True, True, False, False, False, False])
+        for value in ("Управління ТОВ «Приватна компанія» у Харківській області", "ДПС-банк", "Приватний навчальний центр", "Військова частина А1234"):
+            with self.subTest(value=value):
+                self.assertFalse(detect(value, [value], "ІНФОРМАЦІЯ")[0]["excluded"])
+
+    def test_public_authority_classes_and_case_forms(self):
+        values = (
+            "Могилів-Подільського районного територіального центру комплектування та соціальної підтримки",
+            "Міністерства внутрішніх справи України",
+            "Головного управління Пенсійного фонду України",
+            "Міністерству соціальної політики України",
+            "міністерством юстиції України",
+            "Головним управління Пенсійного фонду України",
+            "Головне управління Пенсійного фонду України в Харківській області",
+            "Територіального управління Державної судової адміністрації",
+            "територіальних центрах комплектування та соціальної підтримки",
+            "ТЦК та СП",
+        )
+        for value in values:
+            with self.subTest(value=value):
+                self.assertTrue(detect("Позов до " + value + ";", [value], "ІНФОРМАЦІЯ")[0]["excluded"])
+        for text in ("Позов до Міністерства юстиції України", "Міністерства юстиції України — відповідач"):
+            self.assertTrue(detect(text, ["Міністерства юстиції України"], "ІНФОРМАЦІЯ")[0]["excluded"])
+
+    def test_authority_keywords_alone_do_not_prove_service_name(self):
+        values = (
+            "головне управління", "міністерство", "територіальний центр",
+            "Головне управління приватної компанії у Харківській області",
+            "Управління ТОВ у Харківській області",
+            "Головне управління компанії Державний кредит у Харківській області",
+            "Військовий навчальний центр «Десна»", "Військова частина А1234",
+        )
+        for value in values:
+            with self.subTest(value=value):
+                self.assertFalse(detect(value, [value], "ІНФОРМАЦІЯ")[0]["excluded"])
+
+    def test_authority_names_do_not_hide_nearby_private_data(self):
+        name = "Головного управління Пенсійного фонду України"
+        text = "Позивач: " + name + ", працівник Петренко Іван Іванович, особистий email person@example.com, дата народження: 12.03.1980"
+        values = [name, "Пенсійного фонду", "person@example.com", "12.03.1980", "Петренко Іван Іванович", name + ", працівник Петренко Іван Іванович"]
+        self.assertEqual([c["excluded"] for c in detect(text, values, "ІНФОРМАЦІЯ")], [True, True, False, False, False, False])
+        name = "Могилів-Подільського районного територіального центру комплектування та соціальної підтримки"
+        text = name + ", військовослужбовець ОСОБА_1, person@example.com"
+        self.assertEqual([c["excluded"] for c in detect(text, [name, "person@example.com"], "ІНФОРМАЦІЯ")], [True, False])
+
+    def test_audit_filters_information_after_collection(self):
+        text = "Дата ухвалення рішення: 12.03.2024; email позивача: private@example.com"
+        start = text.index("2024")
+        result = candidates(text, ner=[EntitySpan(start, start + 4, "2024", "ІНФОРМАЦІЯ", 0.99)])
+        self.assertTrue(next(c for c in result if c["sources"] == ["ner"])["excluded"])
+        self.assertFalse(next(c for c in result if c["value"] == "private@example.com")["excluded"])
 
     def test_institutional_contacts(self):
         self.assertTrue(detect("Телефон канцелярії: +380501234567", ["+380501234567"], "НОМЕР")[0]["excluded"])
