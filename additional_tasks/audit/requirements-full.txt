@@ -1,0 +1,4 @@
+# Dependencies for the bundled uk_ner_web_trf_13class model.
+-r requirements-audit.txt
+spacy[transformers]>=3.7.4,<3.8.0
+numpy>=1.26.4,<2
