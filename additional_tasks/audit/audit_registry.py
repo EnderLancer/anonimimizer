@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT))
 
 import predict_trf as P
 from regex_persons import persons
+from additional_tasks.audit.service_filter import mark_service_candidates
 
 PLACEHOLDER = re.compile(r"(?:ОСОБА|АДРЕСА|НОМЕР|ІНФОРМАЦІЯ)_\d+")
 
@@ -61,7 +62,7 @@ def candidates(text, tagger=None, ner=()):
     for s, e, kind in P.rule_spans(text, person_spans):
         add(s, e, kind, "rules")
     # Recover institutional addresses/URLs suppressed by production rules.
-    # No role or treasury/account exclusions are applied in this audit.
+    # Preserve all raw detections, including those later marked as service data.
     for name, kind in (("ADDR_STREET", "АДРЕСА"), ("ADDR_VILLAGE", "АДРЕСА"), ("URL", "ІНФОРМАЦІЯ")):
         for match in getattr(P, name).finditer(text):
             add(match.start(), match.end(), kind, "raw_" + name.lower())
@@ -72,10 +73,11 @@ def candidates(text, tagger=None, ner=()):
                 add(s, e, kind, "crf")
     for span in ner:
         add(span.start, span.end, span.label, "ner")
-    return [{"start": s, "end": e, "type": kind, "value": text[s:e],
+    result = [{"start": s, "end": e, "type": kind, "value": text[s:e],
              "before": text[max(0, s - 180):s], "after": text[e:e + 180],
              "sources": sorted(sources)}
             for (s, e, kind), sources in sorted(found.items())]
+    return mark_service_candidates(text, result)
 
 
 def write_report(path, payload):
@@ -120,19 +122,26 @@ def main():
                   "original": r["text"]} for r in rows]
         raw = N.run_ner(keyed, spec, str(args.out / "ner_cache.json"))
         ner = {r["source_row"]: NP.process(N.map_labels(raw[k["id"]]), r["text"]) for r, k in zip(rows, keyed)}
-    counts = Counter()
+    counts, excluded_counts, exclusion_reasons = Counter(), Counter(), Counter()
     with (args.out / "candidates.jsonl").open("w", encoding="utf8") as output:
         for i, row in enumerate(rows, 1):
             row["candidates"] = candidates(row["text"], tagger, ner.get(row["source_row"], []))
             for candidate in row["candidates"]:
                 candidate["key"] = hashlib.sha256((row["id"] + "\0" + row["text"] + "\0" + str(candidate["start"]) + ":" + str(candidate["end"]) + ":" + candidate["type"]).encode()).hexdigest()
-                counts[candidate["type"]] += 1
+                if candidate["excluded"]:
+                    excluded_counts[candidate["type"]] += 1
+                    exclusion_reasons[candidate["exclusion_reason"]] += 1
+                else:
+                    counts[candidate["type"]] += 1
             output.write(json.dumps(row, ensure_ascii=False) + "\n")
             if i % 25 == 0 or i == len(rows):
-                print(f"Processed {i}/{len(rows)}; candidates={sum(counts.values())}", flush=True)
+                print(f"Processed {i}/{len(rows)}; candidates={sum(counts.values())}; excluded={sum(excluded_counts.values())}", flush=True)
     metadata = {"source": str(args.src.resolve()), "mode": args.mode, "ner": args.ner,
                 "seed": args.seed, "selected": len(rows), "total": total, "text_column": column,
-                "counts": dict(counts), "documents_with_candidates": sum(bool(r["candidates"]) for r in rows)}
+                "counts": dict(counts), "excluded_counts": dict(excluded_counts),
+                "exclusion_reasons": dict(exclusion_reasons), "service_filter_version": 1,
+                "documents_with_candidates": sum(any(not c["excluded"] for c in r["candidates"]) for r in rows),
+                "documents_with_raw_candidates": sum(bool(r["candidates"]) for r in rows)}
     (args.out / "summary.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf8")
     write_report(args.out / "review.html", {"metadata": metadata, "documents": rows})
     print(f"Review: {(args.out / 'review.html').resolve()}")
