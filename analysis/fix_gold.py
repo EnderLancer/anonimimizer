@@ -1,10 +1,11 @@
-"""Виправлені копії лише тих еталонних рішень, де розмітка помилкова.
+"""Виправлений еталон: усі рішення, у яких помилкову розмітку виправлено, і окремо причини виправлень.
 
-python analysis/fix_gold.py [data/test/court_cases.jsonl] [data/test/court_cases_fixed.jsonl]
+python analysis/fix_gold.py [data/test/court_cases.jsonl] [data/test/court_cases_fixed.jsonl] [data/test/fix_reasons_for_court_cases.jsonl]
 
-Кожне виправлене рішення має ті самі поля, що й оригінал (annotations, annotations_by_pseudonym і pseudonymized
-перебудовано з виправлених анотацій), і додаткове поле `corrections`: що було, що стало, чому це помилка
-і на яку норму це спирається. Тексти норм: analysis/legal/.
+court_cases_fixed.jsonl — усі рішення з тими самими полями, що й оригінал; у виправлених annotations,
+annotations_by_pseudonym і pseudonymized перебудовано з виправлених анотацій.
+fix_reasons_for_court_cases.jsonl — лише виправлені рішення (по JSON-об'єкту на рядок) з додатковим полем
+`corrections`: що було, що стало, чому це помилка і на яку норму це спирається. Тексти норм: analysis/legal/.
 
 Нові псевдоніми отримують наступний вільний номер типу в документі, щоб не змінювати решту позначок
 (метрика зважає лише на групування згадок, а не на самі номери).
@@ -240,16 +241,20 @@ def apply(doc, fixes):
 def main():
     src = sys.argv[1] if len(sys.argv) > 1 else "data/test/court_cases.jsonl"
     dst = sys.argv[2] if len(sys.argv) > 2 else "data/test/court_cases_fixed.jsonl"
+    reasons = sys.argv[3] if len(sys.argv) > 3 else "data/test/fix_reasons_for_court_cases.jsonl"
     docs = {str(r["id"]): r for r in map(json.loads, open(src, encoding="utf8"))}
     by_doc = defaultdict(list)
     for f in FIXES:
         by_doc[f["doc"]].append(f)
-    with open(dst, "w", encoding="utf8") as g:
+    with open(dst, "w", encoding="utf8") as g, open(reasons, "w", encoding="utf8") as r:
         for d in docs:  # порядок як в оригіналі
+            doc = docs[d]
             if d in by_doc:
-                fixed = apply(docs[d], by_doc[d])
-                g.write(json.dumps(fixed, ensure_ascii=False) + "\n")
-    print(f"{len(by_doc)} рішень, {len(FIXES)} виправлень -> {dst}")
+                fixed = apply(doc, by_doc[d])
+                r.write(json.dumps(fixed, ensure_ascii=False) + "\n")
+                doc = {k: fixed[k] for k in doc}                # лише поля оригіналу, без corrections
+            g.write(json.dumps(doc, ensure_ascii=False) + "\n")
+    print(f"{len(docs)} рішень, виправлено {len(by_doc)} ({len(FIXES)} виправлень) -> {dst}; причини -> {reasons}")
 
 
 if __name__ == "__main__":

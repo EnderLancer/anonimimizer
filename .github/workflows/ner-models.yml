@@ -289,12 +289,30 @@ jobs:
         run: |
           cos=(); [ "$COSINE" = "true" ] && cos=(--cosine --cosine-model "$COSINE_MODEL")
           python data/evaluate.py out/data.jsonl out/submission.jsonl --json "${cos[@]}" > out/result.json
+          # офіційний тест оцінюється ще й проти виправленої розмітки (analysis/fix_gold.py): ті самі id, тексти
+          # й порядок рядків, тож limit бере ті самі документи; cosine не залежить від розмітки й не рахується вдруге
+          FIXED_DATA=data/test/court_cases_fixed.jsonl
+          if [ "$TEST_DATA" = data/test/court_cases.jsonl ] && [ -f "$FIXED_DATA" ]; then
+            TEST_DATA="$FIXED_DATA" bash .github/scripts/prepare_data.sh >/dev/null
+            mv out/data.jsonl out/data_fixed.jsonl
+            bash .github/scripts/prepare_data.sh >/dev/null
+            python data/evaluate.py out/data_fixed.jsonl out/submission.jsonl --json > out/result_fixed.json
+          fi
+          # текстовий звіт з готового result.json: без другого прогону оцінки (з cosine — повторного рахування ембедингів)
+          report() { python -c 'import json, sys; sys.path.insert(0, "data"); import evaluate; evaluate.print_report(json.load(open(sys.argv[1], encoding="utf8")))' "$1"; }
           {
             echo "### Mode: \`$MODE\`, NER: \`$NER\`${NER_LABELS:+, labels: \`$NER_LABELS\`}"
             echo '```'
-            # текстовий звіт з готового result.json: без другого прогону оцінки (з cosine — повторного рахування ембедингів)
-            python -c 'import json, sys; sys.path.insert(0, "data"); import evaluate; evaluate.print_report(json.load(open("out/result.json", encoding="utf8")))'
+            report out/result.json
             echo '```'
+            if [ -f out/result_fixed.json ]; then
+              echo "<details><summary>Corrected gold <code>$FIXED_DATA</code></summary>"
+              echo
+              echo '```'
+              report out/result_fixed.json
+              echo '```'
+              echo '</details>'
+            fi
           } | tee -a "$GITHUB_STEP_SUMMARY"
           python - <<'EOF'
           import json, os, sys
@@ -312,6 +330,7 @@ jobs:
           path: |
             out/submission.jsonl
             out/result.json
+            out/result_fixed.json
           if-no-files-found: ignore
 
   summary:
@@ -333,14 +352,16 @@ jobs:
           import glob, json, os
           types = ("ОСОБА", "АДРЕСА", "НОМЕР", "ІНФОРМАЦІЯ")
           print(f"## NER `{os.environ['NER']}`\n")
-          print("| Режим | **Бал** | " + " | ".join(types) + " | Strict F1 | Ризик ↓ | B³ F1 | Cosine |")
-          print("|---" * (len(types) + 6) + "|")
+          print("| Режим | **Бал** | " + " | ".join(types) + " | Strict F1 | Ризик ↓ | B³ F1 | Cosine | Бал (випр. розмітка) |")
+          print("|---" * (len(types) + 7) + "|")
           for f in sorted(glob.glob("results/ner-evaluation-*/result.json")):
               mode = os.path.basename(os.path.dirname(f)).removeprefix("ner-evaluation-")
               r = json.load(open(f, encoding="utf8"))
               per = r["ner_relaxed"]["per_type"]
               cos = r.get("cosine_similarity")
+              fx = os.path.join(os.path.dirname(f), "result_fixed.json")
+              fx = f"{json.load(open(fx, encoding='utf8'))['final_score']:.4f}" if os.path.exists(fx) else ""
               print(f"| {mode} | **{r['final_score']:.4f}** | " + " | ".join(f"{per[t]['f1']:.3f}" for t in types)
                     + f" | {r['ner_strict']['macro']['f1']:.4f} | {r['deanonymization_risk_by_name']:.4f}"
-                    + f" | {r['consistency_b3']['f1']:.4f} | {'' if cos is None else f'{cos:.4f}'} |")
+                    + f" | {r['consistency_b3']['f1']:.4f} | {'' if cos is None else f'{cos:.4f}'} | {fx} |")
           EOF

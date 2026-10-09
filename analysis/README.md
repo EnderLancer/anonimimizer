@@ -136,7 +136,10 @@ The other 6.6 points (state bodies, companies, «Військова частин
 
 ## Corrected gold: `data/test/court_cases_fixed.jsonl`
 
-`python analysis/fix_gold.py` writes corrected copies of **only the 18 documents whose gold annotation is wrong**, in the original schema. `annotations`, `annotations_by_pseudonym` and `pseudonymized` are rebuilt. Each document also gets a `corrections` list: `action`, `before`, `after`, `description` (why it is wrong) and `legal_reference` (ст. 7 Закону «Про доступ до судових рішень» and/or the ДСА codifier № 59; texts in `legal/`).
+`python analysis/fix_gold.py` writes two files:
+
+- `data/test/court_cases_fixed.jsonl` — all 240 test documents in the original schema, with the **18 documents whose gold annotation is wrong** replaced by corrected copies (`annotations`, `annotations_by_pseudonym` and `pseudonymized` rebuilt). It is a drop-in replacement for `court_cases.jsonl`.
+- `data/test/fix_reasons_for_court_cases.jsonl` — only those 18 corrected documents (one JSON object per line), each with an extra `corrections` list: `action`, `before`, `after`, `description` (why it is wrong) and `legal_reference` (ст. 7 Закону «Про доступ до судових рішень» and/or the ДСА codifier № 59; texts in `legal/`).
 
 | action | fixes | mentions | what |
 |---|---|---|---|
