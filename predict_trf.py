@@ -83,7 +83,9 @@ NICK = re.compile(r"(?i)(?:нік\w*|нікнейм\w*|акаунт\w*|акка�
 SOCIAL_URL = re.compile(r"(?i)(?<![\w/@.])(?:facebook|instagram|t|telegram|tiktok|twitter|vk|ok|youtube|linkedin)\.(?:com|me|ru|ua|org)/[^\s,;<>\"«»)]+")
 
 
-# ---- ІНФОРМАЦІЯ: організації (юрособи, військові формування, держорганізації) ----
+# ---- організації (юрособи, військові формування, держорганізації) ----
+# Держоргани не маскуються: ст. 7 Закону «Про доступ до судових рішень» і п. 5 кодифікатора ДСА захищають лише
+# фізичних осіб. ORG_GOV / ORG_MIL лише знаходять їх, щоб відкинути з кандидатів ІНФОРМАЦІЯ (модель, CRF).
 _Q = r"[«\"“„]"
 _QE = r"[»\"”“]"
 ORG_LEGAL = re.compile(
@@ -164,25 +166,6 @@ def spans_overlap(a, b):
 
 
 
-# організація-сторона справи: маскується, якщо перед нею тригер ролі (позов до…, скарга…, відповідач…) або після неї «(далі - …)»;
-# далі маскуються всі повтори тієї ж організації в документі
-MIL_UNIT = re.compile(r"(?<![\w-])Військов\w+\s+частин\w+\s+[А-ЯA-Z]\s?\d{3,5}(?!\d)")
-PARTY_PRE = re.compile(r"(?i)(?:позов\w*|скарг\w*|заяв\w*)\s[^.;]{0,160}?(?<![\w-])до\s*$|\(далі\s*[-–—]?\s*$|зобов['’]язати\s*$|дії\s*$")
-PARTY_POST = re.compile(r"\s*\(далі\b")
-def _org_key(t):
-    q = re.search(r"[«\"“„]([^«»\"“”„]+)", t)
-    if q:
-        return "q:" + q.group(1).strip().lower()
-    w = re.findall(r"[\w'’-]+", t.lower())
-    return "g:" + " ".join(x[:6] for x in w[:3])
-def party_orgs(text):
-    cands = [(m.start(), m.end()) for R in (ORG_GOV,) for m in R.finditer(text)]
-    keys = set()
-    for s, e in cands:
-        if PARTY_PRE.search(text[max(0, s - 200):s]) or PARTY_POST.match(text, e):
-            keys.add(_org_key(text[s:e]))
-    return [(s, e, "ІНФОРМАЦІЯ") for s, e in cands if _org_key(text[s:e]) in keys]
-
 VP_NUM = re.compile(r"(?<![\w])ВП\s*№\s*(\d{8,10})(?!\d)")
 ID10 = re.compile(r"(?i)(?:РНОКПП|ІПН|ідентифікаційн\w*\s+(?:код|номер)\w*|(?<!\w)код|(?<!\w)о/р)[^\d\n]{0,25}?(\d{10})(?!\d)")
 # номери, що не стосуються особи: кадастрові, акти готовності, квитанції, записи реєстрів, поштові, номери справ
@@ -193,6 +176,11 @@ ISSUED = re.compile(r"(?i)видан\w*\s*$")
 def treasury_iban(frag):
     """Рахунки казначейства (код 899998) розмітка не маскує."""
     return "899998" in re.sub(r"\s", "", frag)[4:10]
+
+
+def state_body_spans(text):
+    """Державні органи й військові формування (ORG_GOV, ORG_MIL): усі згадки, незалежно від ролі в справі."""
+    return [(m.start(), m.end()) for R in (ORG_GOV, ORG_MIL) for m in R.finditer(text)]
 
 
 def rule_spans(text, pers=()):
@@ -238,10 +226,6 @@ def rule_spans(text, pers=()):
         out.append((m.start(1), m.end(1), "ІНФОРМАЦІЯ"))
     for m in SOCIAL_URL.finditer(text):
         out.append((m.start(), m.end(), "ІНФОРМАЦІЯ"))
-    for R in (ORG_MIL,):
-        for m in R.finditer(text):
-            out.append((m.start(), m.end(), "ІНФОРМАЦІЯ"))
-    out.extend(party_orgs(text))
     for m in ADDR_STREET.finditer(text):
         frag = text[m.start():m.end()].rstrip(" ,")
         pre = text[max(0, m.start() - 90):m.start()]
@@ -284,6 +268,8 @@ def pseudonymize(text, pers, extra=(), generic=False, rules=True):
             spans.append((s, e, "ОСОБА"))
     pers_spans = [(a, b) for a, b, t in spans if t == "ОСОБА"]
     cand = (list(rule_spans(text, pers_spans)) if rules else []) + [tuple(x) for x in extra]
+    sb = state_body_spans(text)  # державні органи не маскуються, хоч би звідки прийшов кандидат (модель, CRF)
+    cand = [c for c in cand if not (c[2] == "ІНФОРМАЦІЯ" and any(spans_overlap(c, o) for o in sb))]
     cand = [c for c in cand if not (c[2] == "НОМЕР" and (NUM_NEG.search(text[max(0, c[0] - 70):c[0]]) or treasury_iban(text[c[0]:c[1]])))]
     for sp in sorted(cand, key=lambda x: -(x[1] - x[0])):
         if not any(spans_overlap(sp, o) for o in spans):

@@ -136,10 +136,10 @@ The other 6.6 points (state bodies, companies, «Військова частин
 
 ## Corrected gold: `data/test/court_cases_fixed.jsonl`
 
-`python analysis/fix_gold.py` writes two files:
+Two data files, edited by hand-reviewed corrections (no code in the project patches the gold):
 
-- `data/test/court_cases_fixed.jsonl` — all 240 test documents in the original schema, with the **18 documents whose gold annotation is wrong** replaced by corrected copies (`annotations`, `annotations_by_pseudonym` and `pseudonymized` rebuilt). It is a drop-in replacement for `court_cases.jsonl`.
-- `data/test/fix_reasons_for_court_cases.jsonl` — only those 18 corrected documents (one JSON object per line), each with an extra `corrections` list: `action`, `before`, `after`, `description` (why it is wrong) and `legal_reference` (ст. 7 Закону «Про доступ до судових рішень» and/or the ДСА codifier № 59; texts in `legal/`).
+- `data/test/court_cases_fixed.jsonl` — all 240 test documents in the original schema, with the **30 documents whose gold annotation is wrong** replaced by corrected copies (`annotations`, `annotations_by_pseudonym` and `pseudonymized` consistent with each other). It is a drop-in replacement for `court_cases.jsonl`: same ids, same texts.
+- `data/test/fix_reasons_for_court_cases.jsonl` — only those 30 corrected documents (one JSON object per line), each with an extra `corrections` list: `action`, `before`, `after`, `description` (why it is wrong) and `legal_reference` (ст. 7 Закону «Про доступ до судових рішень» and/or the ДСА codifier № 59; texts in `legal/`).
 
 | action | fixes | mentions | what |
 |---|---|---|---|
@@ -149,16 +149,30 @@ The other 6.6 points (state bodies, companies, «Військова частин
 | trim / extend | 7 | 7 | role word «адвокат», «, розташованого за адресою:», sentence comma or dot inside the span; an initial's dot dropped mid-sentence |
 | merge / split | 3 | 4 | one person with two labels (Гварамадзе, Підлубний); two names under one label (Тимченко / Тимошенко) |
 | add | 2 | 5 | unmasked natural person «Туйчієвій Одінахон»; unmasked real-estate registration number (×4) |
+| unmask | 13 | 68 | state bodies and military formations marked ІНФОРМАЦІЯ (Міністерство оборони, ТЦК та СП, ГУ Нацполіції / ДПС, ВЛК, військові навчальні центри, …) → not masked |
 
-All 18 documents also had 1–8 labels with stray whitespace («ОСОБА_1 »), stripped and noted as `normalize_label` (108 such labels in the whole test set; scoring ignores them).
+The first 18 documents also had 1–8 labels with stray whitespace («ОСОБА_1 »), stripped and noted as `normalize_label` (108 such labels in the whole test set; scoring ignores them).
 
-Validated with the official `data/evaluate.py`, which accepts the file, and an integrity check (entity = text slice, no overlaps, `pseudonymized` rebuilds exactly). Our `results/full.jsonl` scores **0.753 → 0.895** on these 18 documents and **0.9173 → 0.9289** on all 240 with the fixes applied. Deanonymization risk drops from 4/862 to 3/864 persons.
+**State bodies.** Article 7 and codifier п. 5 protect information that identifies a *natural person*; a state body is not one, and the official gold itself leaves the same bodies open in other documents (54 masked vs 64 open in our run). So in the corrected gold they are not masked. The trade name of a sole proprietor («ФОП Бондар І. Л. «Експрес-Сервіс»») stays masked: it points to a natural person.
+
+The pipeline follows the same rule for any dataset: it never masks state bodies (rules `ORG_GOV` / `ORG_MIL` in `predict_trf.py` only find them, so ІНФОРМАЦІЯ candidates from rules, the model or the CRF that hit one are dropped). CI scores the same run against both gold files.
+
+| mode | corrected gold | official gold |
+|---|---|---|
+| model | .2465 | .2459 |
+| regex | .9498 | .8736 |
+| model_regex | .9525 | .8760 |
+| full | **.9586** (ІНФОРМАЦІЯ F1 .904) | .8816 |
+
+Before this change (state bodies masked when a party, as in the official gold) `full` scored .9173 on the official gold and .8620 on the corrected one.
+
+Integrity: the official `data/evaluate.py` accepts the file; entity = text slice, no overlaps, `pseudonymized` rebuilds exactly.
 
 **Not changed on purpose**, because these are systematic dataset conventions rather than one-off errors (see `LABELING_RULES.md`):
 - judges and enforcement officers are masked, although the codifier exempts officials acting in office;
 - «А1234» is НОМЕР;
 - e-mail is ІНФОРМАЦІЯ, although the codifier says НОМЕР;
-- state bodies and companies are masked in some documents only;
+- private companies are masked in some documents only (legal entities, so legally they need no masking either: ТОВ «Комтех Логістік», ПрАТ «Дельта-Пром»);
 - an initial's dot is dropped at sentence end;
 - ЄСПЛ case names are left open;
 - cadastral and bank-contract numbers are left open.

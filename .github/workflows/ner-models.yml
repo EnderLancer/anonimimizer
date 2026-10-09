@@ -289,8 +289,8 @@ jobs:
         run: |
           cos=(); [ "$COSINE" = "true" ] && cos=(--cosine --cosine-model "$COSINE_MODEL")
           python data/evaluate.py out/data.jsonl out/submission.jsonl --json "${cos[@]}" > out/result.json
-          # офіційний тест оцінюється ще й проти виправленої розмітки (analysis/fix_gold.py): ті самі id, тексти
-          # й порядок рядків, тож limit бере ті самі документи; cosine не залежить від розмітки й не рахується вдруге
+          # офіційний тест оцінюється ще й проти виправленої розмітки: ті самі id, тексти й порядок рядків, тож limit
+          # бере ті самі документи; cosine не залежить від розмітки й не рахується вдруге
           FIXED_DATA=data/test/court_cases_fixed.jsonl
           if [ "$TEST_DATA" = data/test/court_cases.jsonl ] && [ -f "$FIXED_DATA" ]; then
             TEST_DATA="$FIXED_DATA" bash .github/scripts/prepare_data.sh >/dev/null

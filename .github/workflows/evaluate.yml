@@ -33,8 +33,8 @@ concurrency:
 
 env:
   TEST_DATA: data/test/court_cases.jsonl   # contains both the inputs and the expected annotations
-  # те саме з виправленою розміткою 18 рішень (analysis/fix_gold.py): ті самі id і тексти, тож той самий вихід
-  # run.py оцінюється ще й проти нього; поріг min_score і бал у заголовку — за офіційним TEST_DATA
+  # той самий тест з виправленою розміткою (ті самі id і тексти; причини — fix_reasons_for_court_cases.jsonl):
+  # той самий вихід run.py оцінюється ще й проти нього; поріг min_score — за офіційним TEST_DATA
   FIXED_DATA: data/test/court_cases_fixed.jsonl
 
 jobs:
