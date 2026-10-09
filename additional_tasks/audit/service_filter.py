@@ -34,6 +34,72 @@ ADDRESS = re.compile(
     r"(?:адрес\w*\s+(?:суду|прокуратури|банку|канцелярії|нотаріальної\s+контори)|"
     r"(?:суд|прокуратура|банк|нотаріальна\s+контора)\s+(?:знаходиться|розташован\w*)"
     r"\s+за\s+адресою)\s*[:—–-]?\s*$", re.I)
+INSTITUTION_ADDRESS = re.compile(
+    r"\b(?:суд(?:у|і|ом|а|ові)?|прокуратур\w*|банк\w*|канцелярі\w*|"
+    r"нотаріальн\w+\s+контор\w*|(?:сільськ\w+|міськ\w+|селищн\w+)\s+рад\w*|"
+    r"(?:головн\w+\s+)?управлінн\w*|департамент\w*|"
+    r"відділ\w*\s+(?:державн\w+\s+)?реєстраці\w*|"
+    r"інститут\w*\s+судових\s+експертиз|експертно-криміналістичн\w+\s+центр\w*|"
+    r"центр\w*\s+з\s+надання\s+безоплатн\w+|казначейств\w*|"
+    r"товариств\w*\s+з\s+обмеженою\s+відповідальністю|"
+    r"(?:приватн\w+|державн\w+)\s+підприємств\w*|ТОВ|ПАТ|ПрАТ|АТ)\b", re.I)
+# An institution mention must be linked to this address, not merely nearby.
+ADDRESS_LINK = re.compile(
+    r"(?:\(\s*(?:адрес\w*\s*:\s*)?|[,;]?\s*"
+    r"(?:(?:юридичн\w+|поштов\w+)\s+)?(?:адрес\w*|місцезнаходження)\s*[:—–-]\s*|"
+    r"(?:за\s+адресою)\s*:?\s*)$", re.I)
+ADDRESS_NARRATIVE = re.compile(
+    r"\b(?:прожив\w*|мешка\w*|жител\w*|квартир\w*|будин\w*|"
+    r"майн\w*|земельн\w*|ділянк\w*|склад\w*|обшу\w*|"
+    r"встановив|встановлено|позов\w*|позивач\w*|відповідач\w*|"
+    r"зобов\w*|стягну\w*|повідомив|зазначив|відомо)\b", re.I)
+ADDRESS_PERSON = re.compile(
+    r"\b(?:ОСОБА_\d+|адвокат\w*|судд\w*|нотаріус\w*|"
+    r"капітан\w*|інспектор\w*|воді\w*|начальник\w*)\b", re.I)
+WORK_ADDRESS = re.compile(r"\bробоч\w+\s+адрес\w*[^;.!?]{0,100}[:—–-]\s*$", re.I)
+HEARING_ADDRESS = re.compile(
+    r"\b(?:судов\w+\s+засідан\w*|залі\s+суду)"
+    r"[^;!?]{0,180}\bза\s+адресою\s*:?\s*$", re.I)
+
+
+def service_address_reason(text, start, end, addresses, people=()):
+    """Classify each occurrence; never propagate by matching address values."""
+    left = max(0, start - 400)
+    # Stop at another detected address, including one already anonymized.
+    left = max([left] + [c["end"] for c in addresses if c["end"] <= start])
+    placeholders = list(re.finditer(r"АДРЕСА_\d+", text[left:start]))
+    if placeholders:
+        left += placeholders[-1].end()
+    pre = text[left:start]
+    pre = re.split(r"[;!?]|\n\s*\n", pre)[-1]
+    if P.PERSONAL_CTX.search(pre) or re.search(r"\b(?:жител\w*|мешкан\w*)\b", pre, re.I):
+        return None
+    if ADDRESS.search(pre):
+        return "Адреса установи за явним контекстом"
+    if WORK_ADDRESS.search(pre):
+        return "Явно зазначена робоча адреса"
+    if HEARING_ADDRESS.search(pre):
+        return "Адреса проведення судового засідання"
+    for match in reversed(list(INSTITUTION_ADDRESS.finditer(pre))):
+        gap = pre[match.end():]
+        if (len(gap) > 260 or ADDRESS_NARRATIVE.search(gap)
+                or ADDRESS_PERSON.search(gap)
+                or re.search(r"\b(?:близько|знаходячись|перебуваючи)\b", gap, re.I)):
+            continue
+        absolute_end = start - len(pre) + match.end()
+        if any(absolute_end <= c["start"] and c["end"] <= start for c in people):
+            continue
+        # A preceding sentence or closed parenthesis breaks the association.
+        if re.search(r"[)]|\.\s+(?=[А-ЯІЇЄҐ][а-яіїєґ])", gap):
+            continue
+        if ADDRESS_LINK.search(gap):
+            return "Адреса установи за явним контекстом"
+        # Letterhead: institution name and address on consecutive lines at
+        # the start of a document. Also allows NER to include the region name.
+        if start < 240 and re.fullmatch(r"[\w\s.'’ʼ—–-]*", gap):
+            if "\n" in pre or "\n" in text[start:end]:
+                return "Адреса установи в шапці документа"
+    return None
 
 
 def name_key(value):
@@ -82,7 +148,10 @@ def participant_context(text, start, anchors):
 
 def mark_service_candidates(text, candidates):
     """Keep every candidate; attach exclusions without changing detector spans."""
+    addresses = [c for c in candidates if c["type"] == "АДРЕСА"]
     people = [c for c in candidates if c["type"] == "ОСОБА"]
+    address_reasons = {(c["start"], c["end"]): reason for c in addresses
+                       if (reason := service_address_reason(text, c["start"], c["end"], addresses, people))}
     # Prefer full names to overlapping NER fragments for context association.
     anchors = []
     for c in sorted(people, key=lambda c: -(c["end"] - c["start"])):
@@ -152,8 +221,10 @@ def mark_service_candidates(text, candidates):
             if role:
                 c.update(excluded=True, exclusion_reason=reason, role=ROLE_NAMES[role])
         elif kind == "АДРЕСА":
-            if ADDRESS.search(pre) and not P.PERSONAL_CTX.search(pre):
-                c.update(excluded=True, exclusion_reason="Адреса установи за явним контекстом")
+            reason = next((reason for (a, b), reason in address_reasons.items()
+                           if a <= s < e <= b), None)
+            if reason:
+                c.update(excluded=True, exclusion_reason=reason)
         elif kind == "НОМЕР":
             compact = re.sub(r"\s", "", value)
             if re.fullmatch(r"UA\d{27}", compact, re.I) and P.treasury_iban(compact):

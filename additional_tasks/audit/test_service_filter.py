@@ -155,6 +155,53 @@ class ServiceFilterTests(unittest.TestCase):
             with self.subTest(prefix=prefix):
                 self.assertEqual(detect(prefix + "вул. Миру, 10", ["вул. Миру, 10"], "АДРЕСА")[0]["excluded"], expected)
 
+    def test_service_addresses_from_wechsel_report(self):
+        examples = (
+            ("ГОСПОДАРСЬКИЙ СУД\nДНІПРОПЕТРОВСЬКОЇ ОБЛАСТІ\n", "вул. Володимира Винниченка 1, м. Дніпро, 49027"),
+            ("Справа № 445/421/15-к\n\nПеремишлянський районний суд ", "Львівської області\nвул.Галицька,67а"),
+            ("Копію направити Шепетівській окружній прокуратурі (", "вул. Сергія Оврашка, 43, м. Шепетівка, 30400"),
+            ("Засідання відбудеться у приміщенні Господарського суду Київської області (", "м. Київ, вул. С.Петлюри, 16/108"),
+            ("Судове засідання в залі суду на 28 лютого 2024 року на 09.30 год. за адресою: ", "вул. Шевченка, 29"),
+            ("Львівського інституту судових експертиз Міністерства юстиції України, який розташований за адресою: ", "79024, м. Львів, вул. Липинського, 54"),
+            ("Своєю робочою адресою адвокат ОСОБА_6 зазначає: ", "01001, м. Київ, вул. Заньковецької, будинок 4, офіс 3"),
+            ("Відповідач – Студениківська сільська рада Бориспільського району Київської області, юридична адреса: ", "вул.Переясласька, 19"),
+            ("Позивач: Приватне підприємство «ДНК», адреса: ", "вул. Промислова, буд. 23"),
+        )
+        for prefix, value in examples:
+            with self.subTest(prefix=prefix):
+                text = prefix + value
+                result = detect(text, [value], "АДРЕСА")[0]
+                self.assertTrue(result["excluded"])
+                self.assertTrue(result["exclusion_reason"])
+                self.assertEqual(text[result["start"]:result["end"]], value)
+
+    def test_nearby_institution_does_not_exclude_personal_or_property_address(self):
+        prefixes = (
+            "Суд встановив, що ОСОБА_1 проживає за адресою: ",
+            "Адреса проживання судді: ",
+            "Прокуратура повідомила про обшук за адресою: ",
+            "АТ «БАНК КРЕДИТ ДНІПРО», склад рулонів, що розташований за адресою: ",
+            "Позивач — адвокат Петренко Іван Іванович (",
+            "Суд розташований за адресою: АДРЕСА_1. Позивач мешкає за адресою: ",
+            "Адреса суду: АДРЕСА_1; місце події: ",
+            "Начальник окружної прокуратури ОСОБА_3 (",
+            "АТ «ПУМБ», близько 09 год. 55 хв., знаходячись у приміщенні магазину «Київстар», за адресою: ",
+            "Департаменту патрульної поліції капітан поліції Петренко Іван Іванович (місцезнаходження: ",
+        )
+        for prefix in prefixes:
+            with self.subTest(prefix=prefix):
+                self.assertFalse(detect(prefix + "вул. Миру, 10", ["вул. Миру, 10"], "АДРЕСА")[0]["excluded"])
+
+    def test_contained_address_fragments_share_exclusion(self):
+        text = "Судове засідання відбудеться у Верховному Суді за адресою: м. Київ, вул. Миру, 10."
+        result = detect(text, ["м. Київ, вул. Миру, 10", "м. Київ", "вул. Миру, 10"], "АДРЕСА")
+        self.assertTrue(all(c["excluded"] for c in result))
+
+    def test_same_address_is_classified_per_occurrence(self):
+        text = "Адреса суду: вул. Миру, 10. Адреса проживання: вул. Миру, 10."
+        result = candidates(text)
+        self.assertEqual([c["excluded"] for c in result if c["type"] == "АДРЕСА"], [True, False])
+
     def test_official_hosts(self):
         for value, expected in (("https://reyestr.court.gov.ua/Review/123", True),
                                 ("inbox@ki.court.gov.ua", True), ("https://court.gov.ua.evil.example", False),

@@ -139,7 +139,7 @@ def main():
     metadata = {"source": str(args.src.resolve()), "mode": args.mode, "ner": args.ner,
                 "seed": args.seed, "selected": len(rows), "total": total, "text_column": column,
                 "counts": dict(counts), "excluded_counts": dict(excluded_counts),
-                "exclusion_reasons": dict(exclusion_reasons), "service_filter_version": 2,
+                "exclusion_reasons": dict(exclusion_reasons), "service_filter_version": 3,
                 "documents_with_candidates": sum(any(not c["excluded"] for c in r["candidates"]) for r in rows),
                 "documents_with_raw_candidates": sum(bool(r["candidates"]) for r in rows)}
     (args.out / "summary.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf8")
