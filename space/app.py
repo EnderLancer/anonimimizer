@@ -28,7 +28,6 @@ DEFAULT_REPO = "dchaplinsky/uk_ner_web_trf_13class"
 DEFAULT_NER = f"spacy:{DEFAULT_REPO}"
 PRESETS = [
     DEFAULT_NER,
-    "hf:Wismut/nym-pii-multilingual?aggregation=first",
     "gliner:urchade/gliner_multi-v2.1?labels=person,address,phone number&threshold=0.4",
     "hf:dslim/bert-base-NER?aggregation=first&min_score=0.6",
 ]

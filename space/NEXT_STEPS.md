@@ -56,7 +56,7 @@ print(text)   # очікується [ОСОБА_1], [НОМЕР_1], [АДРЕС
 | `spacy:dchaplinsky/uk_ner_web_trf_13class` (за замовчуванням) | ✅ `[ОСОБА_1]`, `[НОМЕР_1]`, `[АДРЕСА_1]` |
 | `gliner:urchade/gliner_multi-v2.1?labels=person,address,phone number&threshold=0.4` | ✅ ті самі три мітки |
 | `hf:dslim/bert-base-NER?aggregation=first&min_score=0.6` | ⚠️ працює після виправлення (п. 5), але якість низька для української: прізвище `Коваленко` не замасковано, а `Київ` позначено як ОСОБА (модель англомовна) |
-| `hf:Wismut/nym-pii-multilingual?aggregation=first` (`@pii`) | ❌ `Tokenizer class TokenizersBackend does not exist`: модель потребує `transformers` 5.x, а `spacy-transformers` 1.4 тримає `<4.53.3`, див. п. 5 |
+| `hf:Wismut/nym-pii-multilingual?aggregation=first` (`@pii`) | ❌ `Tokenizer class TokenizersBackend does not exist`: модель потребує `transformers` 5.x, а `spacy-transformers` 1.4 тримає `<4.53.3`. Пресет прибрано з `space/app.py`; модель лишається в основному проєкті (`ner_adapters.py`, `README.md`), див. п. 5 |
 
 Звірка spaCy-моделі з локальним запуском (spaCy 3.7.5, transformers 4.53.2, ті самі версії, що в Space) на трьох синтетичних документах: сирі сутності збігаються повністю (13/13, 10/10, 6/6). Реальні документи з `data/test/` навмисно не надсилали в публічний Space. У логах Space є попередження `strict=False` про версії `transformers`; на результат воно не вплинуло.
 
@@ -69,7 +69,7 @@ print(text)   # очікується [ОСОБА_1], [НОМЕР_1], [АДРЕС
 | Збирання падає на `numpy` / `thinc` | не спостерігалося | — |
 | **Збирання падає на `huggingface-hub`** (фактично сталося, `Build error` 2026-10-09) | `sdk_version: 6.30.0` тягне `gradio` з `huggingface-hub>=1.16`, а `transformers<4.53.3` (потрібен `spacy-transformers` 1.4) — `huggingface-hub<1.0`. Прибрати `gliner` це не вирішує | **виправлено**: `sdk_version: 5.50.0` (`gradio` 5.x сумісний з `huggingface-hub<2.0,>=0.33.5`). Перевірено: збірка і запуск успішні |
 | Помилка CUDA на `hf:`-моделі (`Low-level CUDA init ... ZeroGPU`) | `pipeline(device=None)` в transformers ставить `device=0` (cuda:0), якщо `torch.cuda.is_available()`; на ZeroGPU це поза `@spaces.GPU` | **виправлено** в `ner_adapters.py`: за замовчуванням CPU (`device=-1`); GPU — явно `&device=0` |
-| `hf:Wismut/nym-pii-multilingual` не завантажується (`TokenizersBackend`) | модель вимагає `transformers` 5.x, а `spacy-transformers` 1.4 тримає `<4.53.3`. Це не виправляється без відмови від `spacy-transformers` | відкрито: прибрати пресет або залишити з попередженням. Для `@pii`-моделей використовувати `gliner` або `dslim` |
+| `hf:Wismut/nym-pii-multilingual` не завантажується (`TokenizersBackend`) | модель вимагає `transformers` 5.x, а `spacy-transformers` 1.4 тримає `<4.53.3`. Це не виправляється без відмови від `spacy-transformers` | **вирішено**: пресет прибрано з `space/app.py`, щоб dropdown не видавав завжди помилку. У локальному CLI модель працює, як і раніше |
 | Застосунок не стартує: таймаут | довге завантаження моделі | збільшити `startup_duration_timeout` або винести завантаження моделі за замовчуванням з модульного рівня `app.py` |
 | Out of memory після кількох моделей | у пам'яті до 2 адаптерів (`lru_cache(maxsize=2)` у `app.py`) | зменшити до 1 |
 | Повільна відповідь на довгих рішеннях | інференс на CPU, roberta-large | див. п. 6 |
