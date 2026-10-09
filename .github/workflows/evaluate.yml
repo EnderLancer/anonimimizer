@@ -53,12 +53,12 @@ jobs:
       - name: Install dependencies
         run: pip install python-crfsuite
 
-      # назва NER-моделі для назв кроків і summary: видно, якою моделлю отримано результат
+      # NER model name for the step names and the summary, so a run shows which model produced the result
       - name: NER model
         id: ner
         run: |
           if [ "${{ matrix.mode }}" = regex ]; then
-            model="без моделі (лише правила)"
+            model="no model (rules only)"
           else
             model=$(python -c 'import os, run; kind, _, path = run.DEFAULT_NER.partition(":"); print(f"{kind}:{os.path.basename(path)} (ner_cache.json)")')
           fi

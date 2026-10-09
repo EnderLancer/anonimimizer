@@ -269,7 +269,7 @@ jobs:
       - name: Prepare data
         run: bash .github/scripts/prepare_data.sh
 
-      - name: "Run pipeline: ${{ matrix.mode == 'regex' && 'без моделі (лише правила)' || needs.setup.outputs.ner }}"
+      - name: "Run pipeline: ${{ matrix.mode == 'regex' && 'no model (rules only)' || needs.setup.outputs.ner }}"
         run: |
           args=(); for l in $NER_LABELS; do args+=(--ner-label "$l"); done
           python run.py out/data.jsonl out/submission.jsonl --mode "$MODE" --ner "$NER" "${args[@]}"
@@ -281,7 +281,7 @@ jobs:
           path: ~/.cache/huggingface
           key: cosine-${{ needs.setup.outputs.cosine_model }}
 
-      - name: "Result %: ${{ matrix.mode == 'regex' && 'без моделі (лише правила)' || needs.setup.outputs.ner }}"
+      - name: "Result %: ${{ matrix.mode == 'regex' && 'no model (rules only)' || needs.setup.outputs.ner }}"
         env:
           COSINE: ${{ needs.setup.outputs.cosine }}
           COSINE_MODEL: ${{ needs.setup.outputs.cosine_model }}
