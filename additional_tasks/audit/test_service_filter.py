@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from additional_tasks.audit.audit_registry import candidates, write_report
+from additional_tasks.audit.audit_registry import raw_candidates, write_report
 from additional_tasks.audit.service_filter import mark_service_candidates
 from additional_tasks.audit.service_filter import service_information_reason
 from ner_adapters import EntitySpan
@@ -38,7 +38,7 @@ class ServiceFilterTests(unittest.TestCase):
 
     def test_judge_after_court_city(self):
         text = "Суддя Шевченківського районного суду м. Чернівці \nПетренко В.Г. розглянувши позов ОСОБА_1"
-        result = candidates(text)
+        result = raw_candidates(text)
         self.assertTrue(next(c for c in result if c["value"] == "Петренко В.Г.")["excluded"])
 
     def test_participants_and_nearby_titles(self):
@@ -68,7 +68,7 @@ class ServiceFilterTests(unittest.TestCase):
         for prefix in prefixes:
             with self.subTest(prefix=prefix):
                 text = prefix + "Петренко Іван Іванович подав позов."
-                result = candidates(text)
+                result = raw_candidates(text)
                 person = next(c for c in result if c["value"] == "Петренко Іван Іванович")
                 self.assertFalse(person["excluded"])
 
@@ -76,7 +76,7 @@ class ServiceFilterTests(unittest.TestCase):
         text = "Позивач — адвокат (м. Київ)\nПетренко Іван Іванович подав позов."
         value = "Іван Іванович"
         s = text.index(value)
-        result = candidates(text, ner=[EntitySpan(s, s + len(value), value, "ОСОБА", 0.99)])
+        result = raw_candidates(text, ner=[EntitySpan(s, s + len(value), value, "ОСОБА", 0.99)])
         self.assertFalse(next(c for c in result if c["sources"] == ["ner"])["excluded"])
 
     def test_representatives_of_participants(self):
@@ -107,7 +107,7 @@ class ServiceFilterTests(unittest.TestCase):
                     ("Представник позивача – адвокат Пінчук К.О.", "Пінчук К.О."))
         for text, value in examples:
             with self.subTest(text=text):
-                result = candidates(text)
+                result = raw_candidates(text)
                 person = next(c for c in result if c["value"] == value)
                 self.assertTrue(person["excluded"])
                 self.assertEqual(person["start"], text.index(value))
@@ -118,7 +118,7 @@ class ServiceFilterTests(unittest.TestCase):
         text = ("Адвокат Петренко Іван Іванович.\n"
                 "Заявник — адвокат (м. Київ)\nПетренко Іван Іванович.\n"
                 "Петренко Іван Іванович подав заяву.")
-        result = candidates(text)
+        result = raw_candidates(text)
         self.assertEqual([c["excluded"] for c in result if c["type"] == "ОСОБА"], [True, False, False])
 
     def test_judge_signatures_with_model_title_and_partial_initials(self):
@@ -136,7 +136,7 @@ class ServiceFilterTests(unittest.TestCase):
             with self.subTest(name=name):
                 s = text.index(model_value)
                 span = EntitySpan(s, s + len(model_value), model_value, "ОСОБА", 0.99)
-                result = candidates(text, ner=[span])
+                result = raw_candidates(text, ner=[span])
                 for value in (model_value, name):
                     c = next(c for c in result if c["value"] == value)
                     self.assertTrue(c["excluded"])
@@ -146,7 +146,7 @@ class ServiceFilterTests(unittest.TestCase):
     def test_signature_name_survives_model_span_with_trailing_prose(self):
         text = "Суддя" + "\xa0" * 95 + "С.І. Крамар\n\nВіддруков. 4 прим."
         model_value = text[:text.index(". 4")]
-        result = candidates(text, ner=[EntitySpan(0, len(model_value), model_value, "ОСОБА", 0.99)])
+        result = raw_candidates(text, ner=[EntitySpan(0, len(model_value), model_value, "ОСОБА", 0.99)])
         name = next(c for c in result if c["value"] == "С.І. Крамар")
         self.assertTrue(name["excluded"])
         # The extra prose is not proven to be service person data.
@@ -157,17 +157,17 @@ class ServiceFilterTests(unittest.TestCase):
             text = prefix + "Л. І. Рогач"
             model_value = text[text.index("суддя"):]
             s = text.index(model_value)
-            result = candidates(text, ner=[EntitySpan(s, len(text), model_value, "ОСОБА", 0.99)])
+            result = raw_candidates(text, ner=[EntitySpan(s, len(text), model_value, "ОСОБА", 0.99)])
             self.assertTrue(all(not c["excluded"] for c in result if c["type"] == "ОСОБА"))
         text = "Суддя Л. І. Рогач; відповідач Коваль Іван Іванович"
-        result = candidates(text, ner=[EntitySpan(0, len(text), text, "ОСОБА", 0.99)])
+        result = raw_candidates(text, ner=[EntitySpan(0, len(text), text, "ОСОБА", 0.99)])
         self.assertTrue(next(c for c in result if c["value"] == "Л. І. Рогач")["excluded"])
         self.assertFalse(next(c for c in result if c["value"] == text)["excluded"])
         self.assertFalse(next(c for c in result if c["value"] == "Коваль Іван Іванович")["excluded"])
 
     def test_exact_repeats_and_partial_ner(self):
         text = "Суддя Петренко Іван Іванович.\nПетренко Іван Іванович підписав рішення.\nПетренко подав заяву."
-        result = candidates(text)
+        result = raw_candidates(text)
         people = [c for c in result if c["type"] == "ОСОБА"]
         self.assertEqual(len(people), 2)
         self.assertTrue(all(c["excluded"] for c in people))
@@ -183,14 +183,14 @@ class ServiceFilterTests(unittest.TestCase):
 
     def test_conflicting_repeat(self):
         text = "Суддя Петренко І. П.; відповідач Петренко І. П.;\nПетренко І. П."
-        result = candidates(text)
+        result = raw_candidates(text)
         self.assertEqual([c["excluded"] for c in result if c["type"] == "ОСОБА"], [True, False, False])
 
     def test_ner_partial_and_private_address(self):
         text = "Суддя Петренко Іван Іванович. Адреса проживання: вул. Миру, 10. ОСОБА_1"
         value = "Іван Іванович"
         s = text.index(value)
-        result = candidates(text, ner=[EntitySpan(s, s + len(value), value, "ОСОБА", 0.99)])
+        result = raw_candidates(text, ner=[EntitySpan(s, s + len(value), value, "ОСОБА", 0.99)])
         self.assertTrue(next(c for c in result if c["sources"] == ["ner"])["excluded"])
         self.assertTrue(any(c["type"] == "АДРЕСА" and not c["excluded"] for c in result))
         self.assertFalse(any("ОСОБА_" in c["value"] for c in result))
@@ -245,7 +245,7 @@ class ServiceFilterTests(unittest.TestCase):
 
     def test_same_address_is_classified_per_occurrence(self):
         text = "Адреса суду: вул. Миру, 10. Адреса проживання: вул. Миру, 10."
-        result = candidates(text)
+        result = raw_candidates(text)
         self.assertEqual([c["excluded"] for c in result if c["type"] == "АДРЕСА"], [True, False])
 
     def test_official_hosts(self):
@@ -465,7 +465,7 @@ class ServiceFilterTests(unittest.TestCase):
     def test_audit_filters_information_after_collection(self):
         text = "Дата ухвалення рішення: 12.03.2024; email позивача: private@example.com"
         start = text.index("2024")
-        result = candidates(text, ner=[EntitySpan(start, start + 4, "2024", "ІНФОРМАЦІЯ", 0.99)])
+        result = raw_candidates(text, ner=[EntitySpan(start, start + 4, "2024", "ІНФОРМАЦІЯ", 0.99)])
         self.assertTrue(next(c for c in result if c["sources"] == ["ner"])["excluded"])
         self.assertFalse(next(c for c in result if c["value"] == "private@example.com")["excluded"])
 
@@ -581,13 +581,13 @@ class ServiceFilterTests(unittest.TestCase):
     def test_audit_filters_partial_ner_number_after_collection(self):
         text = "Справа № 123/456/24. РНОКПП: 1234567890"
         s = text.index("456")
-        result = candidates(text, ner=[EntitySpan(s, s + 3, "456", "НОМЕР", 0.99)])
+        result = raw_candidates(text, ner=[EntitySpan(s, s + 3, "456", "НОМЕР", 0.99)])
         self.assertTrue(next(c for c in result if c["sources"] == ["ner"])["excluded"])
         self.assertFalse(next(c for c in result if c["value"] == "1234567890")["excluded"])
 
     def test_report_contains_exclusions_and_safe_json(self):
         text = "Суддя Петренко І. П. </script>"
-        result = candidates(text)
+        result = raw_candidates(text)
         self.assertTrue(any(c["excluded"] for c in result))
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "review.html"

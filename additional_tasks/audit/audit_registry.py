@@ -13,6 +13,7 @@ ROOT = HERE.parents[1]
 sys.path.insert(0, str(ROOT))
 
 import predict_trf as P
+import run as pipeline
 from regex_persons import persons
 from additional_tasks.audit.service_filter import SERVICE_FILTER_VERSION, mark_service_candidates
 
@@ -45,7 +46,8 @@ def select_rows(path, limit, seed, text_column=None, id_column="id"):
     return sorted(rows, key=lambda r: r["source_row"]), seen, text_column
 
 
-def candidates(text, tagger=None, ner=()):
+def raw_candidates(text, tagger=None, ner=()):
+    """Diagnostic detections before production merging; may overlap."""
     found = {}
     placeholders = [(m.start(), m.end()) for m in PLACEHOLDER.finditer(text)]
 
@@ -81,6 +83,26 @@ def candidates(text, tagger=None, ner=()):
     return mark_service_candidates(text, result)
 
 
+def candidates(text, tagger=None, ner=(), mode=None):
+    """Production annotations, enriched with audit context and service status.
+
+    regex_crf uses production full merging with no NER spans. As in run.py,
+    CRF adds only numbers, information and addresses, not person candidates.
+    """
+    mode = mode or ("full" if tagger is not None else "model_regex" if ner else "regex")
+    annotations = pipeline.annotate(text, ner, "full" if mode == "regex_crf" else mode, tagger)
+    placeholders = [m.span() for m in PLACEHOLDER.finditer(text)]
+    result = []
+    for annotation in annotations:
+        start, end = annotation["start"], annotation["end"]
+        if any(start < b and a < end for a, b in placeholders):
+            continue
+        result.append({**annotation, "type": annotation["pseudonym"].rsplit("_", 1)[0],
+                       "value": text[start:end], "before": text[max(0, start - 180):start],
+                       "after": text[end:end + 180], "sources": ["pipeline"]})
+    return mark_service_candidates(text, result)
+
+
 def write_report(path, payload):
     template = (HERE / "audit_review.html").read_text(encoding="utf8")
     # Keep arbitrary decision text inert inside the embedded JSON script.
@@ -95,6 +117,8 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--out", type=Path, default=HERE / "out")
     parser.add_argument("--mode", choices=("regex", "regex_crf", "full"), default="full")
+    parser.add_argument("--candidate-source", choices=("pipeline", "raw"), default="pipeline",
+                        help="Production annotations (default) or all raw detections for diagnostics")
     parser.add_argument("--ner", help="NER specification for full mode (as in run.py)")
     parser.add_argument("--text-column")
     parser.add_argument("--id-column", default="id")
@@ -125,7 +149,10 @@ def main():
     counts, excluded_counts, exclusion_reasons = Counter(), Counter(), Counter()
     with (args.out / "candidates.jsonl").open("w", encoding="utf8") as output:
         for i, row in enumerate(rows, 1):
-            row["candidates"] = candidates(row["text"], tagger, ner.get(row["source_row"], []))
+            if args.candidate_source == "raw":
+                row["candidates"] = raw_candidates(row["text"], tagger, ner.get(row["source_row"], []))
+            else:
+                row["candidates"] = candidates(row["text"], tagger, ner.get(row["source_row"], []), args.mode)
             for candidate in row["candidates"]:
                 candidate["key"] = hashlib.sha256((row["id"] + "\0" + row["text"] + "\0" + str(candidate["start"]) + ":" + str(candidate["end"]) + ":" + candidate["type"]).encode()).hexdigest()
                 if candidate["excluded"]:
@@ -136,7 +163,9 @@ def main():
             output.write(json.dumps(row, ensure_ascii=False) + "\n")
             if i % 25 == 0 or i == len(rows):
                 print(f"Processed {i}/{len(rows)}; candidates={sum(counts.values())}; excluded={sum(excluded_counts.values())}", flush=True)
-    metadata = {"source": str(args.src.resolve()), "mode": args.mode, "ner": args.ner,
+    metadata = {"source": str(args.src.resolve()), "mode": args.mode,
+                "ner": (args.ner or DEFAULT_NER) if args.mode == "full" else None,
+                "candidate_source": args.candidate_source,
                 "seed": args.seed, "selected": len(rows), "total": total, "text_column": column,
                 "counts": dict(counts), "excluded_counts": dict(excluded_counts),
                 "exclusion_reasons": dict(exclusion_reasons), "service_filter_version": SERVICE_FILTER_VERSION,

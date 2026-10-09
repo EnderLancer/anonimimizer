@@ -5,7 +5,7 @@ from urllib.parse import urlsplit
 import predict_trf as P
 from regex_persons import persons
 
-SERVICE_FILTER_VERSION = 10
+SERVICE_FILTER_VERSION = 11
 
 # Match labels and complete values in the original text, independently of
 # detector boundaries. NER may return only a fragment of the full number.
@@ -118,9 +118,10 @@ def service_number_reason(text, start, end, regions=None, protected=None):
 ROLES = re.compile(
     r"\b(?:(?P<judge>суддя-доповідач\w*|судд[яіюеївямх]*|головуюч\w*)|"
     r"(?P<lawyer>адвокат\w*|захисник\w*)|(?P<notary>нотаріус\w*)|"
-    r"(?P<prosecutor>прокурор\w*)|(?P<secretary>секретар\w*))\b", re.I)
+    r"(?P<prosecutor>прокурор\w*)|(?P<secretary>секретар\w*)|(?P<juror>присяжн\w*))\b", re.I)
 ROLE_NAMES = {"judge": "суддя", "lawyer": "адвокат / захисник",
-              "notary": "нотаріус", "prosecutor": "прокурор", "secretary": "секретар"}
+              "notary": "нотаріус", "prosecutor": "прокурор", "secretary": "секретар",
+              "juror": "присяжний"}
 PARTY = re.compile(r"\b(?:позивач\w*|відповідач\w*|обвинувачен\w*|підозрюван\w*|"
                   r"засуджен\w*|потерпіл\w*|боржник\w*|свідок|свідк\w*|"
                   r"заявни[кц]\w*|стягувач\w*|скаржни[кц]\w*|"
@@ -133,7 +134,7 @@ REPRESENTATIVE = re.compile(
 GAP = re.compile(r"[А-ЯІЇЄҐа-яіїєґ'’ʼ\s,:()—–-]*")
 INSTITUTION_WORD = re.compile(
     r"^(?:\w*(?:суд|район|облас|міськ|округ|апеляці|касаці|верхов|господар|"
-    r"адміністратив|нотаріаль|держав|приват|прокуратур|засідан|ськ)\w*|"
+    r"адміністратив|нотаріаль|держав|приват|прокуратур|засідан|ськ|цьк)\w*|"
     r"україни|міста|м|києва|львова|одеси|харкова|та|і|у|в)$", re.I)
 SUFFIX_GAP = re.compile(r"[\s,():—–-]*(?:(?:приватн\w*|державн\w*)\s+)?", re.I)
 LIST_GAP = re.compile(r"\s*[,;]\s*(?:(?:та|і)\s+)?", re.I)
@@ -461,6 +462,9 @@ def normalize_role_context(value):
 
 
 def role_gap(value):
+    # Alignment padding is common in signatures. Measure meaningful context,
+    # while keeping all offsets in the original text unchanged.
+    value = re.sub(r"\s+", " ", value)
     if len(value) > 160:
         return False
     value = normalize_role_context(value)
@@ -495,6 +499,23 @@ def participant_context(text, start, anchors):
     return False
 
 
+def service_person_list(text, start, end, direct):
+    """Prove that a merged model span contains only names with one service role."""
+    parts = sorted((max(start, a), min(end, b), role)
+                   for (a, b), role in direct.items() if a < end and start < b)
+    if len(parts) < 2 or parts[0][0] != start or parts[-1][1] != end:
+        return None
+    roles = {part[2] for part in parts}
+    if len(roles) != 1:
+        return None
+    role = parts[0][2]
+    for left, right in zip(parts, parts[1:]):
+        gap = normalize_role_context(text[left[1]:right[0]])
+        if not (LIST_GAP.fullmatch(gap) or (role == "juror" and "\n" in gap and not gap.strip())):
+            return None
+    return role
+
+
 def mark_service_candidates(text, candidates):
     """Keep every candidate; attach exclusions without changing detector spans."""
     addresses = [c for c in candidates if c["type"] == "АДРЕСА"]
@@ -504,11 +525,10 @@ def mark_service_candidates(text, candidates):
     information_regions = service_information_regions(text)
     address_reasons = {(c["start"], c["end"]): reason for c in addresses
                        if (reason := service_address_reason(text, c["start"], c["end"], addresses, people))}
-    # Source-based names take precedence over model spans that may include
-    # a title, truncate a surname, or swallow the following paragraph.
+    # Names matched in the source take precedence over model fragments that
+    # can include titles, several people or the next paragraph.
     anchors = []
-    source_names = [{"start": s, "end": e, "value": text[s:e]}
-                    for s, e, _ in persons(text)]
+    source_names = [{"start": s, "end": e, "value": text[s:e]} for s, e, _ in persons(text)]
     for c in source_names + sorted(people, key=lambda c: -(c["end"] - c["start"])):
         if not any(c["start"] < a["end"] and a["start"] < c["end"] for a in anchors):
             anchors.append(c)
@@ -529,7 +549,7 @@ def mark_service_candidates(text, candidates):
         for m in reversed(roles):
             if m.end() > s:
                 continue
-            if s - m.end() > 160:
+            if s - m.end() > 500:
                 break
             gap = text[m.end():s]
             # "Адвокат позивача ПІБ" names the lawyer, not the plaintiff.
@@ -547,8 +567,10 @@ def mark_service_candidates(text, candidates):
                 if e <= m.start() <= e + 60 and SUFFIX_GAP.fullmatch(normalize_role_context(text[e:m.start()])):
                     role = m.lastgroup
                     break
-        if role is None and previous and LIST_GAP.fullmatch(normalize_role_context(text[previous[0]:s])):
-            role = previous[1]
+        if role is None and previous:
+            gap = normalize_role_context(text[previous[0]:s])
+            if LIST_GAP.fullmatch(gap) or (previous[1] == "juror" and "\n" in gap and not gap.strip()):
+                role = previous[1]
         if role:
             direct[(s, e)] = role
             if role_start is not None:
@@ -574,12 +596,15 @@ def mark_service_candidates(text, candidates):
                 continue
             role = next((r for (a, b), r in direct.items() if a <= s < e <= b), None)
             if role is None:
-                # Allow a detector to include the proven title, but require
-                # overlap with the name and containment in the title/name
-                # region. Trailing prose or another person stays visible.
+                # A title can be inside the candidate, but trailing prose or
+                # another name must not be hidden along with the signature.
                 role = next((r for a, name_start, b, r in role_regions
                              if a <= s < e <= b and e > name_start), None)
             reason = "Ім’я безпосередньо пов’язане зі службовою роллю"
+            if role is None:
+                role = service_person_list(text, s, e, direct)
+                if role:
+                    reason = "Фрагмент містить лише імена службових осіб однієї ролі"
             if role is None and len(key) >= 2 and len(known.get(key, ())) == 1:
                 role = next(iter(known[key]))
                 reason = "Повтор точно такого самого службового імені в цьому рішенні"
