@@ -17,6 +17,7 @@ from regex_persons import persons
 from additional_tasks.audit.service_filter import SERVICE_FILTER_VERSION, mark_service_candidates
 
 PLACEHOLDER = re.compile(r"(?:ОСОБА|АДРЕСА|НОМЕР|ІНФОРМАЦІЯ)_\d+")
+DEFAULT_NER = "hf:davidmelash/wechsel_base_v7large_2026-10-09_r4?aggregation=simple&stride=128"
 
 
 def select_rows(path, limit, seed, text_column=None, id_column="id"):
@@ -115,7 +116,6 @@ def main():
     if args.mode == "full":
         import ner_adapters as N
         import ner_postprocess as NP
-        from run import DEFAULT_NER
         spec = args.ner or DEFAULT_NER
         # Separate cache, keyed by model spec, document ID and exact published text.
         keyed = [{"id": hashlib.sha256((spec + "\0" + r["id"] + "\0" + r["text"]).encode()).hexdigest(),

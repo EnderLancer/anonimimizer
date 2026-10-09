@@ -121,6 +121,50 @@ class ServiceFilterTests(unittest.TestCase):
         result = candidates(text)
         self.assertEqual([c["excluded"] for c in result if c["type"] == "ОСОБА"], [True, False, False])
 
+    def test_judge_signatures_with_model_title_and_partial_initials(self):
+        examples = (
+            ("Постанова оскарженню не підлягає.\n\nСуддя " + " \xa0" * 16 + " Н.В.Домарєва",
+             "Суддя " + " \xa0" * 16 + " Н.В.Домарєва", "Н.В.Домарєва"),
+            ("Суддя" + "\xa0" * 95 + "С.І. Крамар",
+             "Суддя" + "\xa0" * 95 + "С.І. Крамар", "С.І. Крамар"),
+            ("Ухвала підписана суддею, оскарженню не підлягає.\n\nСуддя Т.А. Марків",
+             "Суддя Т.А.", "Т.А. Марків"),
+            ("Суддя Г. М. Мачульський\n\nСуддя Л. І. Рогач",
+             "Суддя Л. І.", "Л. І. Рогач"),
+        )
+        for text, model_value, name in examples:
+            with self.subTest(name=name):
+                s = text.index(model_value)
+                span = EntitySpan(s, s + len(model_value), model_value, "ОСОБА", 0.99)
+                result = candidates(text, ner=[span])
+                for value in (model_value, name):
+                    c = next(c for c in result if c["value"] == value)
+                    self.assertTrue(c["excluded"])
+                    self.assertEqual(c["role"], "суддя")
+                    self.assertEqual(text[c["start"]:c["end"]], value)
+
+    def test_signature_name_survives_model_span_with_trailing_prose(self):
+        text = "Суддя" + "\xa0" * 95 + "С.І. Крамар\n\nВіддруков. 4 прим."
+        model_value = text[:text.index(". 4")]
+        result = candidates(text, ner=[EntitySpan(0, len(model_value), model_value, "ОСОБА", 0.99)])
+        name = next(c for c in result if c["value"] == "С.І. Крамар")
+        self.assertTrue(name["excluded"])
+        # The extra prose is not proven to be service person data.
+        self.assertFalse(next(c for c in result if c["value"] == model_value)["excluded"])
+
+    def test_model_title_does_not_override_participant_or_crossing_person(self):
+        for prefix in ("Відповідач — суддя ", "Позивач — суддя\n"):
+            text = prefix + "Л. І. Рогач"
+            model_value = text[text.index("суддя"):]
+            s = text.index(model_value)
+            result = candidates(text, ner=[EntitySpan(s, len(text), model_value, "ОСОБА", 0.99)])
+            self.assertTrue(all(not c["excluded"] for c in result if c["type"] == "ОСОБА"))
+        text = "Суддя Л. І. Рогач; відповідач Коваль Іван Іванович"
+        result = candidates(text, ner=[EntitySpan(0, len(text), text, "ОСОБА", 0.99)])
+        self.assertTrue(next(c for c in result if c["value"] == "Л. І. Рогач")["excluded"])
+        self.assertFalse(next(c for c in result if c["value"] == text)["excluded"])
+        self.assertFalse(next(c for c in result if c["value"] == "Коваль Іван Іванович")["excluded"])
+
     def test_exact_repeats_and_partial_ner(self):
         text = "Суддя Петренко Іван Іванович.\nПетренко Іван Іванович підписав рішення.\nПетренко подав заяву."
         result = candidates(text)

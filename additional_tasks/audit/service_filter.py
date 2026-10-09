@@ -3,8 +3,9 @@ import re
 from urllib.parse import urlsplit
 
 import predict_trf as P
+from regex_persons import persons
 
-SERVICE_FILTER_VERSION = 9
+SERVICE_FILTER_VERSION = 10
 
 # Match labels and complete values in the original text, independently of
 # detector boundaries. NER may return only a fragment of the full number.
@@ -503,14 +504,18 @@ def mark_service_candidates(text, candidates):
     information_regions = service_information_regions(text)
     address_reasons = {(c["start"], c["end"]): reason for c in addresses
                        if (reason := service_address_reason(text, c["start"], c["end"], addresses, people))}
-    # Prefer full names to overlapping NER fragments for context association.
+    # Source-based names take precedence over model spans that may include
+    # a title, truncate a surname, or swallow the following paragraph.
     anchors = []
-    for c in sorted(people, key=lambda c: -(c["end"] - c["start"])):
+    source_names = [{"start": s, "end": e, "value": text[s:e]}
+                    for s, e, _ in persons(text)]
+    for c in source_names + sorted(people, key=lambda c: -(c["end"] - c["start"])):
         if not any(c["start"] < a["end"] and a["start"] < c["end"] for a in anchors):
             anchors.append(c)
     anchors.sort(key=lambda c: c["start"])
     roles = list(ROLES.finditer(text))
     direct, ambiguous, participants = {}, set(), []
+    role_regions = []
     previous = None
     for c in anchors:
         s, e = c["start"], c["end"]
@@ -520,6 +525,7 @@ def mark_service_candidates(text, candidates):
             previous = None
             continue
         role = None
+        role_start = None
         for m in reversed(roles):
             if m.end() > s:
                 continue
@@ -534,6 +540,7 @@ def mark_service_candidates(text, candidates):
                 # Never attach a role across another detected person.
                 if not any(m.end() <= a["start"] < s for a in anchors):
                     role = m.lastgroup
+                    role_start = m.start()
                     break
         if role is None:
             for m in roles:
@@ -544,6 +551,8 @@ def mark_service_candidates(text, candidates):
             role = previous[1]
         if role:
             direct[(s, e)] = role
+            if role_start is not None:
+                role_regions.append((role_start, s, e, role))
             previous = (e, role)
         else:
             previous = None
@@ -564,6 +573,12 @@ def mark_service_candidates(text, candidates):
             if any(a < e and s < b for a, b in participants):
                 continue
             role = next((r for (a, b), r in direct.items() if a <= s < e <= b), None)
+            if role is None:
+                # Allow a detector to include the proven title, but require
+                # overlap with the name and containment in the title/name
+                # region. Trailing prose or another person stays visible.
+                role = next((r for a, name_start, b, r in role_regions
+                             if a <= s < e <= b and e > name_start), None)
             reason = "Ім’я безпосередньо пов’язане зі службовою роллю"
             if role is None and len(key) >= 2 and len(known.get(key, ())) == 1:
                 role = next(iter(known[key]))
