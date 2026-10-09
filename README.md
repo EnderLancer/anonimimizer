@@ -73,7 +73,7 @@ python run.py cases.jsonl out.jsonl --ner spacy:path/to/model   # за замо�
 | Тип | Формат виходу моделі | Опції (`?ключ=значення&…`) | Пакет |
 |---|---|---|---|
 | `spacy` | `doc.ents` | `batch_size` | `spacy` |
-| `hf` | `transformers.pipeline("token-classification")`: з агрегацією (`entity_group`) і без (`B-PER`/`I-PER` по токенах); позиції або, якщо їх немає, пошук за `word` | `aggregation`, `min_score`, `device`, `max_chars`, `overlap`, `batch_size`, `join_spaces` | `transformers`, `torch` |
+| `hf` | `transformers.pipeline("token-classification")`: з агрегацією (`entity_group`) і без (`B-PER`/`I-PER` по токенах); позиції або, якщо їх немає, пошук за `word` | `aggregation`, `min_score`, `device`, `max_chars`, `overlap`, `batch_size`, `join_spaces`, `trust_remote_code` | `transformers`, `torch` |
 | `gliner` | `predict_entities` → `{start, end, label, score}` | `labels`, `threshold`, `device`, `max_chars`, `overlap`, `join_spaces` | `gliner` |
 
 - Мітки моделі переводяться в типи челенджу через `--ner-label МІТКА=ТИП` (повторюваний). Мітки, що вже є типами челенджу (`ОСОБА`, `АДРЕСА`, `НОМЕР`, `ІНФОРМАЦІЯ` — так розмічають моделі з `train/`), ідуть як є. За замовчуванням у ОСОБА йдуть `PER`, `PERS`, `PERSON` і частини імені з PII-моделей (`GIVEN_NAME`, `SURNAME`, `FIRST_NAME`, `LAST_NAME`, `NAME`…), решта відкидається; `МІТКА=` вимикає мітку. Не-ОСОБА фрагменти моделі йдуть у пайплайн як додаткові кандидати поруч із правилами.
@@ -84,6 +84,7 @@ python run.py cases.jsonl out.jsonl --ner spacy:path/to/model   # за замо�
 - Кеш окремий для кожної моделі: `ner_cache/<модель>.json` (для моделі за замовчуванням — `ner_cache.json`). У кеші лежать сирі мітки, тож `--ner-label` можна змінювати без повторного інференсу.
 - Новий формат: клас з методом `predict_one(text) -> list[EntitySpan]` (зручно через `normalize()`), зареєстрований декоратором `@register("тип")`.
 - Ще опція `revision` (гілка, тег або коміт моделі на HF) для `hf` і `gliner`.
+- `trust_remote_code=1` (`hf`) виконує код з репозиторію моделі. Потрібна для `davidmelash/modern_liberta_*`: їхній токенізатор LiBERTa лежить у репозиторії, напр. `--ner "hf:davidmelash/modern_liberta_large_w2048_v7_2026-10-09_r5_s43?trust_remote_code=1"`.
 - `hf` з fast-токенізатором ріже документ на вікна по токенах (до ліміту моделі, перекриття `stride`, за замовчуванням 64 токени). Для моделей з англомовним словником кирилиця йде майже по токену на символ, тож вікна по символах були б або задовгими, або напівпорожніми. `quantize=1` вмикає динамічну int8-квантизацію: на CPU швидше в ~1,5–2 рази, точність може трохи змінитися.
 - **Приватні моделі:** токен Hugging Face береться зі змінної середовища `HF_TOKEN`. У рядок моделі його не пишемо: рядок потрапляє в логи й у назву кешу.
 
@@ -117,7 +118,7 @@ Actions → **NER model evaluation** → Run workflow (`.github/workflows/ner-mo
 
 ### Демо (Hugging Face Space)
 
-`space/app.py` — Gradio-демо: текст рішення ──► режим (0–2) ──► підсвічені сутності, псевдонімізований текст і анотації. NER-модель задається в інтерфейсі тим самим рядком, що й `--ner` (`spacy:` / `hf:` / `gliner:`, з опціями), мітки — як `--ner-label` (`LOC=АДРЕСА @pii`); таблиця «Сутності моделі» показує сирі мітки, щоб підібрати відповідність. spaCy-модель з HF (`spacy:dchaplinsky/uk_ner_web_trf_13class`) завантажується як тека, без `.whl`. Логіка документа спільна з `run.py` (`run.annotate`), тож демо дає ту саму розмітку, що й CLI.
+`space/app.py` — Gradio-демо: текст рішення ──► режим (0–2) ──► підсвічені сутності, псевдонімізований текст і анотації. NER-модель задається в інтерфейсі тим самим рядком, що й `--ner` (`spacy:` / `hf:` / `gliner:`, з опціями), мітки — як `--ner-label` (`LOC=АДРЕСА @pii`); таблиця «Сутності моделі» показує сирі мітки, щоб підібрати відповідність. У списку моделей — усі token-classification моделі акаунта [`davidmelash`](https://huggingface.co/davidmelash) (читається на старті Space; за замовчуванням `wechsel_base_v7_2026-10-09_r5_s43`), для них Space сам вмикає `trust_remote_code`; іншим репозиторіям ця опція заборонена. spaCy-модель з HF (`spacy:dchaplinsky/uk_ner_web_trf_13class`) завантажується як тека, без `.whl`. Логіка документа спільна з `run.py` (`run.annotate`), тож демо дає ту саму розмітку, що й CLI.
 
 Локально: `pip install gradio spacy-transformers`, потім `python space/app.py`.
 

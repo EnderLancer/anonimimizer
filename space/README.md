@@ -23,7 +23,8 @@ Space оновлюється автоматично з гілки `main` (GitHub
 
 NER-модель задається в інтерфейсі рядком `тип:repo[?опції]`:
 
-- `spacy:dchaplinsky/uk_ner_web_trf_13class` — за замовчуванням;
+- `hf:davidmelash/…` — наші моделі на всі чотири типи (список береться з акаунта на старті Space), за замовчуванням `hf:davidmelash/wechsel_base_v7_2026-10-09_r5_s43`;
+- `spacy:dchaplinsky/uk_ner_web_trf_13class` — spaCy-модель (лише ОСОБА);
 - `hf:<repo>?aggregation=first&min_score=0.6` — будь-яка token-classification модель;
 - `gliner:<repo>?labels=person,address&threshold=0.4` — GLiNER.
 

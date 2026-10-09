@@ -22,12 +22,13 @@ if not os.path.exists(os.path.join(HERE, "run.py")):
     sys.path.insert(0, os.path.dirname(HERE))
 
 import gradio as gr
-from huggingface_hub import snapshot_download
+from huggingface_hub import HfApi, snapshot_download
 
-DEFAULT_REPO = "dchaplinsky/uk_ner_web_trf_13class"
-DEFAULT_NER = f"spacy:{DEFAULT_REPO}"
-PRESETS = [
-    DEFAULT_NER,
+OWNER = "davidmelash"  # моделі, натреновані в train/; лише їм дозволено trust_remote_code
+OWNER_SKIP = {"davidmelash/wechsel_base"}
+DEFAULT_NER = "hf:davidmelash/wechsel_base_v7_2026-10-09_r5_s43"
+OTHER_PRESETS = [
+    "spacy:dchaplinsky/uk_ner_web_trf_13class",
     "gliner:urchade/gliner_multi-v2.1?labels=person,address,phone number&threshold=0.4",
     "hf:dslim/bert-base-NER?aggregation=first&min_score=0.6",
 ]
@@ -43,9 +44,33 @@ import ner_postprocess as NP  # noqa: E402
 import run as R  # noqa: E402
 
 
+def is_owner_model(name: str) -> bool:
+    return re.fullmatch(rf"{OWNER}/[\w.-]+", name) is not None
+
+
+def owner_models() -> list[str]:
+    """Token-classification моделі акаунта OWNER (список — на старті Space); без мережі — лише DEFAULT_NER."""
+    try:
+        ids = sorted(m.id for m in HfApi().list_models(author=OWNER, pipeline_tag="token-classification",
+                                                       token=N.hf_token()))
+    except Exception as e:
+        print(f"список моделей {OWNER}: {type(e).__name__}: {e}")
+        ids = []
+    specs = [f"hf:{i}" for i in ids if i not in OWNER_SKIP]
+    return [DEFAULT_NER] + [s for s in specs if s != DEFAULT_NER]
+
+
+PRESETS = owner_models() + OTHER_PRESETS
+
+
 def resolve_spec(spec: str) -> str:
-    """spaCy-модель з HF (spacy:org/repo) завантажується як тека (без .whl на 1,3 ГБ) і вантажиться за шляхом."""
-    kind, name, _ = N.parse_spec(spec)
+    """spaCy-модель з HF (spacy:org/repo) завантажується як тека (без .whl на 1,3 ГБ) і вантажиться за шляхом.
+    Моделям OWNER вмикається trust_remote_code (токенізатор LiBERTa), будь-якій іншій він заборонений."""
+    kind, name, opts = N.parse_spec(spec)
+    if opts.get("trust_remote_code") and not is_owner_model(name):
+        raise ValueError(f"trust_remote_code дозволено лише для моделей {OWNER}/…")
+    if kind == "hf" and is_owner_model(name) and "trust_remote_code" not in opts:
+        spec = N.make_spec(kind, name, **opts, trust_remote_code=1)
     if kind == "spacy" and not os.path.exists(name) and re.fullmatch(r"[\w.-]+/[\w.-]+", name):
         path = snapshot_download(name, ignore_patterns=["*.whl"], token=N.hf_token())
         spec = spec.replace(name, path, 1)
@@ -124,6 +149,7 @@ with gr.Blocks(title="Псевдонімізація судових рішень
     gr.Markdown(
         "## Псевдонімізація українських судових рішень\n"
         "NER-модель + правила (regex) для ОСОБА, НОМЕР / ІНФОРМАЦІЯ / АДРЕСА. "
+        f"Моделі `{OWNER}/…` натреновані нами і знають усі чотири типи. "
         "Модель можна замінити на будь-яку з Hugging Face: `hf:` (token-classification), `gliner:` або `spacy:`. "
         "Код: [github.com/EnderLancer/anonimimizer](https://github.com/EnderLancer/anonimimizer)."
     )
