@@ -197,7 +197,10 @@ class HFTokenClassificationAdapter(NerAdapter):
                  revision: str | None = None, stride: int = 64, quantize: int = 0, pipe=None):
         if pipe is None:
             from transformers import pipeline
-            pipe = pipeline("token-classification", model=name, aggregation_strategy=aggregation, device=device,
+            # device=None у transformers означає cuda:0, якщо CUDA «доступна»; на ZeroGPU це падає поза @spaces.GPU.
+            # За замовчуванням — CPU; GPU вмикається явно: &device=0.
+            pipe = pipeline("token-classification", model=name, aggregation_strategy=aggregation,
+                            device=-1 if device is None else device,
                             revision=revision and str(revision), token=hf_token())
             if quantize:
                 import torch

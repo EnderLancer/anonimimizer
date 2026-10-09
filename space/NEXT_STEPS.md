@@ -1,6 +1,6 @@
 # Space: наступні кроки
 
-Стан на 2026-10-09: код демо (`space/`) і автодеплой (`.github/workflows/deploy-space.yml`) готові, але Space ще не створено. Акаунт `EnderLance` отримав `402 Payment Required`: ZeroGPU на безкоштовному акаунті доступний лише акаунтам, старшим за 30 днів, з підтвердженим email. Тому Space розгортаємо на акаунті іншого учасника команди.
+Стан на 2026-10-09: Space створено і запущено: https://huggingface.co/spaces/orthodoxus-nihilist/anonimimizer (ZeroGPU, `zero-a10g`). Акаунт `EnderLancer` отримав `402 Payment Required`: ZeroGPU на безкоштовному акаунті доступний лише акаунтам, старшим за 30 днів, з підтвердженим email. Тому Space розгорнуто на акаунті `orthodoxus-nihilist` (створено 2025-05-28, email підтверджено, не PRO). Нижче — що зроблено, а що лишилося відкритим.
 
 Як влаштовано демо й деплой, описано в розділі «Демо (Hugging Face Space)» головного `README.md`.
 
@@ -49,14 +49,25 @@ hl, text, ann, rows = c.predict("Позивач Коваленко Марія І
 print(text)   # очікується [ОСОБА_1], [НОМЕР_1], [АДРЕСА_1]
 ```
 
-Варто перевірити й іншу модель з інтерфейсу, напр. `hf:Wismut/nym-pii-multilingual?aggregation=first` з мітками `@pii`.
+Результати перевірки (через Gradio API, `/pseudonymize`):
+
+| Модель | Результат |
+|---|---|
+| `spacy:dchaplinsky/uk_ner_web_trf_13class` (за замовчуванням) | ✅ `[ОСОБА_1]`, `[НОМЕР_1]`, `[АДРЕСА_1]` |
+| `gliner:urchade/gliner_multi-v2.1?labels=person,address,phone number&threshold=0.4` | ✅ ті самі три мітки |
+| `hf:dslim/bert-base-NER?aggregation=first&min_score=0.6` | ❌ до виправлення: `device=None` → CUDA поза `@spaces.GPU`; виправлено, див. п. 5 |
+| `hf:Wismut/nym-pii-multilingual?aggregation=first` (`@pii`) | ❌ `Tokenizer class TokenizersBackend does not exist`: модель потребує `transformers` 5.x, а `spacy-transformers` 1.4 тримає `<4.53.3`, див. п. 5 |
+
+Ще не зроблено: звірка розмітки spaCy-моделі з CLI на кількох документах (у логах Space є попередження `strict=False`: ваги завантажено з перевіркою версій вимкненою) і перевірка через `hf` CLI (замість неї використано Gradio API та сторінку логів).
 
 ## 5. Ймовірні проблеми
 
 | Симптом | Причина | Що зробити |
 |---|---|---|
-| Збирання падає на `numpy` / `thinc` | `spacy<3.8` тягне `thinc 8.2` з `numpy<2`, а передвстановлені пакети Space можуть вимагати `numpy>=2` | у `space/requirements.txt` поставити `spacy>=3.8,<3.9`; модель навчено на 3.7, тому spaCy покаже попередження W095, але має завантажитися. Після цього звірити розмітку з CLI на кількох документах |
-| Конфлікт `transformers` | `spacy-transformers` вимагає `<4.53.3`, `gliner` — `>=4.51.3` | якщо `gliner` не потрібен, прибрати його з requirements і верхню межу `transformers` |
+| Збирання падає на `numpy` / `thinc` | не спостерігалося | — |
+| **Збирання падає на `huggingface-hub`** (фактично сталося, `Build error` 2026-10-09) | `sdk_version: 6.30.0` тягне `gradio` з `huggingface-hub>=1.16`, а `transformers<4.53.3` (потрібен `spacy-transformers` 1.4) — `huggingface-hub<1.0`. Прибрати `gliner` це не вирішує | **виправлено**: `sdk_version: 5.50.0` (`gradio` 5.x сумісний з `huggingface-hub<2.0,>=0.33.5`). Перевірено: збірка і запуск успішні |
+| Помилка CUDA на `hf:`-моделі (`Low-level CUDA init ... ZeroGPU`) | `pipeline(device=None)` в transformers ставить `device=0` (cuda:0), якщо `torch.cuda.is_available()`; на ZeroGPU це поза `@spaces.GPU` | **виправлено** в `ner_adapters.py`: за замовчуванням CPU (`device=-1`); GPU — явно `&device=0` |
+| `hf:Wismut/nym-pii-multilingual` не завантажується (`TokenizersBackend`) | модель вимагає `transformers` 5.x, а `spacy-transformers` 1.4 тримає `<4.53.3`. Це не виправляється без відмови від `spacy-transformers` | відкрито: прибрати пресет або залишити з попередженням. Для `@pii`-моделей використовувати `gliner` або `dslim` |
 | Застосунок не стартує: таймаут | довге завантаження моделі | збільшити `startup_duration_timeout` або винести завантаження моделі за замовчуванням з модульного рівня `app.py` |
 | Out of memory після кількох моделей | у пам'яті до 2 адаптерів (`lru_cache(maxsize=2)` у `app.py`) | зменшити до 1 |
 | Повільна відповідь на довгих рішеннях | інференс на CPU, roberta-large | див. п. 6 |
