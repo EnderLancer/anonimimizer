@@ -17,6 +17,7 @@
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -31,7 +32,9 @@ TYPES = ("ОСОБА", "АДРЕСА", "НОМЕР", "ІНФОРМАЦІЯ")
 # Окрім класичних NER-міток — імена з PII-моделей, які ділять ім'я на частини (напр. Wismut/nym-pii-multilingual:
 # GIVEN_NAME/SURNAME; на тесті 98–99% таких фрагментів — gold ОСОБА). Решту PII-міток (DATE, CITY, COMPANY_NAME…)
 # розмітка челенджу здебільшого не маскує, тож їх вмикають явно через --ner-label.
+# Моделі, донавчені на розмітці челенджу (train/, напр. davidmelash/wechsel_base), віддають самі типи: вони йдуть як є.
 DEFAULT_LABEL_MAP = {
+    **{t: t for t in TYPES},
     **dict.fromkeys(("PERS", "PER", "PERSON"), "ОСОБА"),
     **dict.fromkeys(("GIVEN_NAME", "GIVENNAME", "FIRST_NAME", "FIRSTNAME", "MIDDLE_NAME", "MIDDLENAME", "SURNAME",
                      "LAST_NAME", "LASTNAME", "FAMILY_NAME", "NAME", "FULL_NAME", "FULLNAME", "NAME_STUDENT"), "ОСОБА"),
@@ -213,13 +216,23 @@ class HFTokenClassificationAdapter(NerAdapter):
         if limit > 100_000:  # «необмежено» в токенізаторі: беремо з конфігу моделі
             limit = getattr(getattr(getattr(pipe, "model", None), "config", None), "max_position_embeddings", 512)
         self.tok, self.limit = tok, limit
+        # Окрема копія fast-токенізатора для нарізання на вікна. Пайплайн під час першого виклику вмикає у своєму
+        # токенізаторі обрізання до ліміту моделі, і воно лишається ввімкненим: далі encode() всього документа віддавав би
+        # лише перші ~512 токенів, і з другого документа решта тексту не потрапляла б у жодне вікно.
+        self.enc = None
+        backend = getattr(tok, "backend_tokenizer", None)
+        if backend is not None:
+            self.enc = copy.deepcopy(backend)
+            if hasattr(self.enc, "no_truncation"):
+                self.enc.no_truncation()
+                self.enc.no_padding()
 
     def _fast(self) -> bool:
-        return getattr(self.tok, "backend_tokenizer", None) is not None
+        return self.enc is not None
 
     def _n_tokens(self, s: str) -> int:
         if self._fast():  # без попередження «sequence length is longer than … 512» на довгих текстах
-            return len(self.tok.backend_tokenizer.encode(s, add_special_tokens=True).ids)
+            return len(self.enc.encode(s, add_special_tokens=True).ids)
         return len(self.tok(s, add_special_tokens=True)["input_ids"])
 
     def _fits(self, s: str) -> bool:
@@ -229,7 +242,7 @@ class HFTokenClassificationAdapter(NerAdapter):
         """Документ токенізується один раз; вікно — до limit токенів, перекриття stride токенів, межі — на початку слова.
         Для моделей з англомовним словником кирилиця йде майже по токену на символ, тож вікна по символах
         виходять або задовгими, або напівпорожніми."""
-        offs = self.tok.backend_tokenizer.encode(text, add_special_tokens=False).offsets
+        offs = self.enc.encode(text, add_special_tokens=False).offsets
         n = len(offs)
         size = self.limit - self.tok.num_special_tokens_to_add() - 8  # запас: на межі вікна токенізація може трохи змінитися
         stride = min(self.stride, size // 4)

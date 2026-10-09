@@ -56,6 +56,17 @@ jobs:
       - name: Install dependencies
         run: pip install python-crfsuite
 
+      # NER model name for the step names and the summary, so a run shows which model produced the result
+      - name: NER model
+        id: ner
+        run: |
+          if [ "${{ matrix.mode }}" = regex ]; then
+            model="no model (rules only)"
+          else
+            model=$(python -c 'import os, run; kind, _, path = run.DEFAULT_NER.partition(":"); print(f"{kind}:{os.path.basename(path)} (ner_cache.json)")')
+          fi
+          echo "model=$model" | tee -a "$GITHUB_OUTPUT"
+
       - name: Check NER cache covers the test data
         if: matrix.mode != 'regex'
         run: |
@@ -67,7 +78,7 @@ jobs:
           assert not missing, f"{len(missing)} documents are not in ner_cache.json, e.g. {missing[:5]}"
           EOF
 
-      - name: Run pipeline
+      - name: "Run pipeline: ${{ steps.ner.outputs.model }}"
         run: |
           mkdir -p out
           python run.py "$TEST_DATA" out/submission.jsonl --mode ${{ matrix.mode }}
@@ -77,9 +88,10 @@ jobs:
           python data/evaluate.py "$TEST_DATA" out/submission.jsonl --json > out/result.json
           python data/evaluate.py "$FIXED_DATA" out/submission.jsonl --json > out/result_fixed.json
 
-      - name: Result %
+      - name: "Result %: ${{ steps.ner.outputs.model }}"
         env:
           MIN_SCORE: ${{ inputs.min_score || vars.MIN_SCORE }}
+          NER_MODEL: ${{ steps.ner.outputs.model }}
         run: |
           report() { python -c 'import json, sys; sys.path.insert(0, "data"); import evaluate; evaluate.print_report(json.load(open(sys.argv[1], encoding="utf8")))' "$1"; }
           {
