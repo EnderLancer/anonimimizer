@@ -33,6 +33,9 @@ concurrency:
 
 env:
   TEST_DATA: data/test/court_cases.jsonl   # contains both the inputs and the expected annotations
+  # той самий тест з виправленою розміткою 18 документів (ті самі id і тексти):
+  # той самий вихід run.py оцінюється ще й проти нього; поріг min_score — за офіційним TEST_DATA
+  FIXED_DATA: data/test/court_cases_fixed.jsonl
 
 jobs:
   evaluate:
@@ -57,9 +60,9 @@ jobs:
         if: matrix.mode != 'regex'
         run: |
           python - <<'EOF'
-          import json
+          import json, os
           cache = json.load(open("ner_cache.json", encoding="utf8"))
-          ids = [str(json.loads(l)["id"]) for l in open("data/test/court_cases.jsonl", encoding="utf8") if l.strip()]
+          ids = [str(json.loads(l)["id"]) for l in open(os.environ["TEST_DATA"], encoding="utf8") if l.strip()]
           missing = [i for i in ids if i not in cache]
           assert not missing, f"{len(missing)} documents are not in ner_cache.json, e.g. {missing[:5]}"
           EOF
@@ -70,22 +73,33 @@ jobs:
           python run.py "$TEST_DATA" out/submission.jsonl --mode ${{ matrix.mode }}
 
       - name: Check against expected result
-        run: python data/evaluate.py "$TEST_DATA" out/submission.jsonl --json > out/result.json
+        run: |
+          python data/evaluate.py "$TEST_DATA" out/submission.jsonl --json > out/result.json
+          python data/evaluate.py "$FIXED_DATA" out/submission.jsonl --json > out/result_fixed.json
 
       - name: Result %
         env:
           MIN_SCORE: ${{ inputs.min_score || vars.MIN_SCORE }}
         run: |
+          report() { python -c 'import json, sys; sys.path.insert(0, "data"); import evaluate; evaluate.print_report(json.load(open(sys.argv[1], encoding="utf8")))' "$1"; }
           {
             echo "### Mode: \`${{ matrix.mode }}\`"
+            echo "Original gold \`$TEST_DATA\`"
             echo '```'
-            python data/evaluate.py "$TEST_DATA" out/submission.jsonl 2>/dev/null
+            report out/result.json
             echo '```'
+            echo "<details><summary>Corrected gold <code>$FIXED_DATA</code></summary>"
+            echo
+            echo '```'
+            report out/result_fixed.json
+            echo '```'
+            echo '</details>'
           } | tee -a "$GITHUB_STEP_SUMMARY"
           python - <<'EOF'
           import json, os, sys
           score = 100 * json.load(open("out/result.json", encoding="utf8"))["final_score"]
-          print(f"Score: {score:.2f}%")
+          fixed = 100 * json.load(open("out/result_fixed.json", encoding="utf8"))["final_score"]
+          print(f"Score: {score:.2f}% (corrected gold: {fixed:.2f}%)")
           m = os.environ.get("MIN_SCORE")
           if m and score < float(m):
               sys.exit(f"Score {score:.2f}% is below the threshold {float(m):.2f}%")
@@ -104,4 +118,5 @@ jobs:
           path: |
             out/submission.jsonl
             out/result.json
+            out/result_fixed.json
           if-no-files-found: ignore
