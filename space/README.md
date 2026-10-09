@@ -4,7 +4,7 @@ emoji: 🕶️
 colorFrom: blue
 colorTo: yellow
 sdk: gradio
-sdk_version: 6.30.0
+sdk_version: 5.50.0
 app_file: app.py
 python_version: "3.12"
 short_description: Pseudonymization of Ukrainian court decisions
