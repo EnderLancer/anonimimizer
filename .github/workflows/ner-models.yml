@@ -36,7 +36,7 @@ on:
         options: [hf, gliner, spacy]
         default: hf
       model:
-        description: "Репозиторій HF (org/name) або spaCy-пакет / шлях; порожньо (тип hf) — змінна репозиторію NER_MODEL"
+        description: "HF repo (org/name) or spaCy package / path; empty (type hf) uses the repository variable NER_MODEL"
         required: false
         default: ""
       ner_labels:
