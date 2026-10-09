@@ -3,6 +3,8 @@ import unittest
 from unittest.mock import patch
 
 import run
+import ner_postprocess as NP
+from regex_persons import persons
 from ner_adapters import EntitySpan
 from additional_tasks.audit.audit_registry import candidates, raw_candidates
 from additional_tasks.audit.service_filter import mark_service_candidates
@@ -102,6 +104,63 @@ class PipelineAnnotationTests(unittest.TestCase):
         result = candidates(text, ner=[span], mode="model_regex")
         self.assertFalse(any("ОСОБА_1" in c["value"] for c in result))
         self.assertTrue(any(c["value"] == "person@example.com" for c in result))
+
+    def test_new_court_signatures_are_service_names(self):
+        examples = (
+            ("Суддя П`ятихатського районного суду\nДніпропетровської області Ю.В.Кудрявцева", ["Ю.В.Кудрявцева"]),
+            ("Верховний Суд у складі судді-доповідача Касаційного адміністративного суду Мартинюк Н.М.,", ["Мартинюк Н.М."]),
+            ("Судді | Л.І. Бившева |\n| Р.Ф. Ханова В.В. Хохуляк |", ["Л.І. Бившева", "Р.Ф. Ханова", "В.В. Хохуляк"]),
+            ("Судді: І. О. Дундар\n\nЄ. В. Краснощоков\n\nВ. І. Крат", ["І. О. Дундар", "Є. В. Краснощоков", "В. І. Крат"]),
+        )
+        for text, expected in examples:
+            with self.subTest(text=text):
+                result = candidates(text, mode="regex")
+                self.assertEqual([c["value"] for c in result], expected)
+                self.assertTrue(all(c["excluded"] for c in result))
+                self.assertEqual([text[s:e] for s, e, _ in persons(text)], expected)
+
+    def test_merged_model_names_are_split_in_shared_postprocessing(self):
+        for text, expected in (
+            ("Р.Ф. Ханова В.В. Хохуляк", ["Р.Ф. Ханова", "В.В. Хохуляк"]),
+            ("Краснощокова Є. В., Крата В. І.,", ["Краснощокова Є. В.", "Крата В. І."]),
+        ):
+            with self.subTest(text=text):
+                spans = NP.process([EntitySpan(0, len(text), text, "ОСОБА", 0.9)], text)
+                self.assertEqual([s.text for s in spans], expected)
+                # A second processing pass must not merge separate names again.
+                self.assertEqual([s.text for s in NP.process(spans, text)], expected)
+                final = run.annotate(text, spans, "full", self.tagger)
+                audited = candidates(text, self.tagger, spans, "full")
+                self.assertEqual([{key: c[key] for key in ("start", "end", "pseudonym")} for c in audited], final)
+
+    def test_model_person_span_with_prose_is_not_split(self):
+        text = "Петренко І.П. повідомив про Коваль О.В."
+        spans = NP.process([EntitySpan(0, len(text), text, "ОСОБА", 0.9)], text)
+        self.assertEqual([s.text for s in spans], [text])
+
+    def test_person_parts_still_assemble_and_addresses_are_unaffected(self):
+        text = "Олена Соловей"
+        spans = NP.process([EntitySpan(0, 5, "Олена", "ОСОБА", 0.9), EntitySpan(6, len(text), "Соловей", "ОСОБА", 0.9)], text)
+        self.assertEqual([s.text for s in spans], [text])
+        text = "вул. Київська, буд. 15"
+        spans = [EntitySpan(0, 13, text[:13], "АДРЕСА", 0.9), EntitySpan(19, len(text), text[19:], "АДРЕСА", 0.9)]
+        self.assertEqual(NP.process(spans, text), NP.assemble(spans, text))
+
+    def test_judge_lists_do_not_swallow_unrelated_people_or_prose(self):
+        texts = (
+            "Судді: І. О. Дундар\n\nПозивач Є. В. Краснощоков",
+            "Судді | Л.І. Бившева |\n| Р.Ф. Ханова | відповідач В.В. Хохуляк |",
+            "Судді: І. О. Дундар\n\nВідомості про Є. В. Краснощоков",
+        )
+        for text in texts:
+            with self.subTest(text=text):
+                result = candidates(text, mode="regex")
+                self.assertFalse(result[-1]["excluded"])
+
+    def test_apostrophe_court_title_does_not_hide_a_participant_judge(self):
+        text = "Відповідач — суддя П`ятихатського районного суду\nДніпропетровської області Ю.В.Кудрявцева"
+        result = candidates(text, mode="regex")
+        self.assertFalse(result[0]["excluded"])
 
 
 if __name__ == "__main__":

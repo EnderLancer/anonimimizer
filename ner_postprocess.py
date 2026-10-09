@@ -10,6 +10,7 @@ PII-моделі ділять сутність на частини: GIVEN_NAME �
 import re
 
 from ner_adapters import EntitySpan
+from regex_persons import persons
 
 SPACES = re.compile(r"[ \t\xa0]+")
 # що може стояти між частинами однієї адреси: «вул. Шевченка[, буд. ]5[, кв. ]14[, м. ]Київ[, ]Київська область»
@@ -39,4 +40,18 @@ def assemble(spans: list[EntitySpan], text: str) -> list[EntitySpan]:
 
 
 def process(spans: list[EntitySpan], text: str) -> list[EntitySpan]:
-    return assemble(spans, text)
+    # A model can return an entire signature list as one person. Split only
+    # when full regex names cover the span, with separators and no prose.
+    names = sorted(persons(text))
+    assembled = assemble(spans, text)
+    result = []
+    for span in assembled:
+        matches = [(s, e) for s, e, _ in names if span.start <= s < e <= span.end]
+        if span.label == "ОСОБА" and len(matches) >= 2:
+            gaps = [text[span.start:matches[0][0]], text[matches[-1][1]:span.end]]
+            gaps += [text[left[1]:right[0]] for left, right in zip(matches, matches[1:])]
+            if all(re.fullmatch(r"[\s,;|]*", gap) for gap in gaps):
+                result.extend(EntitySpan(s, e, text[s:e], span.label, span.score) for s, e in matches)
+                continue
+        result.append(span)
+    return result

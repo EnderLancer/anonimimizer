@@ -5,7 +5,7 @@ from urllib.parse import urlsplit
 import predict_trf as P
 from regex_persons import persons
 
-SERVICE_FILTER_VERSION = 11
+SERVICE_FILTER_VERSION = 12
 
 # Match labels and complete values in the original text, independently of
 # detector boundaries. NER may return only a fragment of the full number.
@@ -116,7 +116,7 @@ def service_number_reason(text, start, end, regions=None, protected=None):
     return next((reason for a, b, reason in regions if a <= start < end <= b), None)
 
 ROLES = re.compile(
-    r"\b(?:(?P<judge>суддя-доповідач\w*|судд[яіюеївямх]*|головуюч\w*)|"
+    r"\b(?:(?P<judge>судд[яіюеївямх]*-доповідач\w*|судд[яіюеївямх]*|головуюч\w*)|"
     r"(?P<lawyer>адвокат\w*|захисник\w*)|(?P<notary>нотаріус\w*)|"
     r"(?P<prosecutor>прокурор\w*)|(?P<secretary>секретар\w*)|(?P<juror>присяжн\w*))\b", re.I)
 ROLE_NAMES = {"judge": "суддя", "lawyer": "адвокат / захисник",
@@ -458,7 +458,8 @@ def name_key(value):
 
 def normalize_role_context(value):
     """Normalize a copy only: candidate offsets always refer to original text."""
-    return re.sub(r"\bм\.\s*", "м ", value.replace("|", " "), flags=re.I)
+    value = re.sub(r"(?<=\w)['`’ʼ](?=\w)", "", value.replace("|", " "))
+    return re.sub(r"\bм\.\s*", "м ", value, flags=re.I)
 
 
 def role_gap(value):
@@ -511,7 +512,7 @@ def service_person_list(text, start, end, direct):
     role = parts[0][2]
     for left, right in zip(parts, parts[1:]):
         gap = normalize_role_context(text[left[1]:right[0]])
-        if not (LIST_GAP.fullmatch(gap) or (role == "juror" and "\n" in gap and not gap.strip())):
+        if not (LIST_GAP.fullmatch(gap) or (role in ("judge", "juror") and not gap.strip())):
             return None
     return role
 
@@ -546,6 +547,7 @@ def mark_service_candidates(text, candidates):
             continue
         role = None
         role_start = None
+        signature_list = False
         for m in reversed(roles):
             if m.end() > s:
                 continue
@@ -561,6 +563,7 @@ def mark_service_candidates(text, candidates):
                 if not any(m.end() <= a["start"] < s for a in anchors):
                     role = m.lastgroup
                     role_start = m.start()
+                    signature_list = role == "judge" and m.group().casefold() in ("судді", "суддів") and bool(re.search(r"[:|]", text[m.end():s]))
                     break
         if role is None:
             for m in roles:
@@ -569,13 +572,15 @@ def mark_service_candidates(text, candidates):
                     break
         if role is None and previous:
             gap = normalize_role_context(text[previous[0]:s])
-            if LIST_GAP.fullmatch(gap) or (previous[1] == "juror" and "\n" in gap and not gap.strip()):
+            if LIST_GAP.fullmatch(gap) or (previous[1] in ("judge", "juror") and
+                                          (previous[2] or "\n" in gap or "|" in text[previous[0]:s]) and not gap.strip()):
                 role = previous[1]
+                signature_list = previous[2]
         if role:
             direct[(s, e)] = role
             if role_start is not None:
                 role_regions.append((role_start, s, e, role))
-            previous = (e, role)
+            previous = (e, role, signature_list)
         else:
             previous = None
 
