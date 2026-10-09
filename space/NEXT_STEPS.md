@@ -55,7 +55,7 @@ print(text)   # очікується [ОСОБА_1], [НОМЕР_1], [АДРЕС
 |---|---|
 | `spacy:dchaplinsky/uk_ner_web_trf_13class` (за замовчуванням) | ✅ `[ОСОБА_1]`, `[НОМЕР_1]`, `[АДРЕСА_1]` |
 | `gliner:urchade/gliner_multi-v2.1?labels=person,address,phone number&threshold=0.4` | ✅ ті самі три мітки |
-| `hf:dslim/bert-base-NER?aggregation=first&min_score=0.6` | ❌ до виправлення: `device=None` → CUDA поза `@spaces.GPU`; виправлено, див. п. 5 |
+| `hf:dslim/bert-base-NER?aggregation=first&min_score=0.6` | ⚠️ працює після виправлення (п. 5), але якість низька для української: прізвище `Коваленко` не замасковано, а `Київ` позначено як ОСОБА (модель англомовна) |
 | `hf:Wismut/nym-pii-multilingual?aggregation=first` (`@pii`) | ❌ `Tokenizer class TokenizersBackend does not exist`: модель потребує `transformers` 5.x, а `spacy-transformers` 1.4 тримає `<4.53.3`, див. п. 5 |
 
 Ще не зроблено: звірка розмітки spaCy-моделі з CLI на кількох документах (у логах Space є попередження `strict=False`: ваги завантажено з перевіркою версій вимкненою) і перевірка через `hf` CLI (замість неї використано Gradio API та сторінку логів).
