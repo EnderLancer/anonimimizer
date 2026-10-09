@@ -1,0 +1,66 @@
+# Автодеплой демо на Hugging Face Space:
+#   push у main ──► Evaluation (evaluate.yml) успішна ──► build_space.sh ──► hf upload у Space
+#
+# Потрібно в Settings → Secrets and variables → Actions:
+#   змінна HF_SPACE — <акаунт>/<назва> Space; поки її немає, автодеплой пропускається;
+#   секрет HF_SPACE_TOKEN — write-токен цього акаунта (не плутати з read-токеном HF_TOKEN);
+#   змінна HF_SPACE_HARDWARE (необов'язково) — залізо нового Space, за замовчуванням zero-a10g (ZeroGPU).
+# Space створюється автоматично, якщо його ще немає. Gradio на безкоштовному акаунті — лише ZeroGPU,
+# і лише для акаунтів, старших за 30 днів; інакше потрібен PRO.
+name: Deploy Space
+
+on:
+  workflow_run:
+    workflows: [Evaluation]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-space
+  cancel-in-progress: true
+
+env:
+  HF_SPACE: ${{ vars.HF_SPACE }}
+  HF_SPACE_HARDWARE: ${{ vars.HF_SPACE_HARDWARE || 'zero-a10g' }}
+
+jobs:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || (vars.HF_SPACE != '' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install hf CLI
+        run: pip install -U huggingface_hub
+
+      - name: Build Space files
+        run: bash .github/scripts/build_space.sh dist/space
+
+      - name: Create Space if missing
+        env:
+          HF_TOKEN: ${{ secrets.HF_SPACE_TOKEN }}
+        run: |
+          test -n "$HF_SPACE" || { echo "::error::variable HF_SPACE is not set"; exit 1; }
+          test -n "$HF_TOKEN" || { echo "::error::secret HF_SPACE_TOKEN is not set"; exit 1; }
+          hf repos create "$HF_SPACE" --type space --space-sdk gradio --flavor "$HF_SPACE_HARDWARE" --public --exist-ok
+
+      - name: Upload to Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_SPACE_TOKEN }}
+        run: |
+          sha="${{ github.event.workflow_run.head_sha || github.sha }}"
+          hf upload "$HF_SPACE" dist/space . --repo-type space --delete "*.py" \
+            --commit-message "Deploy ${sha::7} from GitHub" \
+            --commit-description "https://github.com/${{ github.repository }}/commit/$sha"
+          echo "Deployed to https://huggingface.co/spaces/$HF_SPACE" | tee -a "$GITHUB_STEP_SUMMARY"
