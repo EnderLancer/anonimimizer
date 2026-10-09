@@ -41,6 +41,32 @@ class ServiceFilterTests(unittest.TestCase):
         result = raw_candidates(text)
         self.assertTrue(next(c for c in result if c["value"] == "Петренко В.Г.")["excluded"])
 
+    def test_complete_court_descriptions_with_geography(self):
+        examples = (
+            ("Києво-Святошинського районного суду Київської області ", "Омельченко Мирослава Миколаївна"),
+            ("Кам`янець-Подільського\n       міськрайонного суду Хмельницької області" + " " * 32, "Шевцова Л.М."),
+            ("Вільнянського районного суду Запорізької області ", "Мануйлова Н. Ю."),
+            ("Дніпропетровського окружного адміністративного суду ", "Кальник В.В."),
+        )
+        for court, name in examples:
+            for apostrophe in ("`", "'", "’", "ʼ"):
+                court_variant = court.replace("`", apostrophe)
+                text = "Суддя " + court_variant + name + ","
+                with self.subTest(text=text):
+                    result = raw_candidates(text)
+                    person = next(c for c in result if c["value"] == name)
+                    self.assertTrue(person["excluded"])
+                    self.assertEqual(person["role"], "суддя")
+                    self.assertEqual(text[person["start"]:person["end"]], name)
+                    # Model fragments must inherit the full name's role.
+                    self.assertTrue(detect(text, [name.split()[0]])[0]["excluded"])
+                    for party in ("Позивач", "Відповідач", "Свідок"):
+                        participant = raw_candidates(party + " — " + text)
+                        self.assertFalse(next(c for c in participant if c["value"] == name)["excluded"])
+                    for prose in ("заслухав пояснення ", "повідомив про ", "Свідок "):
+                        narrative = "Суддя " + court_variant + prose + name
+                        self.assertFalse(detect(narrative, [name])[0]["excluded"])
+
     def test_participants_and_nearby_titles(self):
         for prefix in ("відповідач — адвокат ", "позивач нотаріус ",
                        "суддя заслухав пояснення ", "адвокат представляє інтереси "):

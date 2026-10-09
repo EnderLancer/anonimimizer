@@ -5,7 +5,7 @@ from urllib.parse import urlsplit
 import predict_trf as P
 from regex_persons import persons
 
-SERVICE_FILTER_VERSION = 12
+SERVICE_FILTER_VERSION = 13
 
 # Match labels and complete values in the original text, independently of
 # detector boundaries. NER may return only a fragment of the full number.
@@ -133,9 +133,20 @@ REPRESENTATIVE = re.compile(
 # clause, participant role, or arbitrary prose must not bridge that relation.
 GAP = re.compile(r"[А-ЯІЇЄҐа-яіїєґ'’ʼ\s,:()—–-]*")
 INSTITUTION_WORD = re.compile(
-    r"^(?:\w*(?:суд|район|облас|міськ|округ|апеляці|касаці|верхов|господар|"
+    r"^(?:\w*(?:суд|район|облас|міськ|округ|окруж|апеляці|касаці|верхов|господар|"
     r"адміністратив|нотаріаль|держав|приват|прокуратур|засідан|ськ|цьк)\w*|"
     r"україни|міста|м|києва|львова|одеси|харкова|та|і|у|в)$", re.I)
+# Recognize a complete court description instead of requiring every part of
+# a geographic name to be an institution word. Keep compounds intact and
+# require genitive forms, court types and an explicit "суду" boundary.
+COURT_GEOGRAPHY = r"[А-ЯІЇЄҐ][а-яіїєґ]*(?:-[А-ЯІЇЄҐа-яіїєґ][а-яіїєґ]*)*(?:ого|ої|их)"
+COURT_ROLE_GAP = re.compile(
+    rf"[\s,:()—–-]*(?:{COURT_GEOGRAPHY}\s+){{0,3}}"
+    r"(?:(?i:районного|міськрайонного|міського|окружного|апеляційного|"
+    r"касаційного|верховного|господарського|адміністративного)\s+){1,3}"
+    r"(?i:суду)"
+    rf"(?:\s+(?:{COURT_GEOGRAPHY}\s+){{1,2}}(?i:області)|\s+(?i:України))?"
+    r"[\s,:()—–-]*")
 SUFFIX_GAP = re.compile(r"[\s,():—–-]*(?:(?:приватн\w*|державн\w*)\s+)?", re.I)
 LIST_GAP = re.compile(r"\s*[,;]\s*(?:(?:та|і)\s+)?", re.I)
 TOKENS = re.compile(r"[^\W\d_]+", re.U)
@@ -469,6 +480,8 @@ def role_gap(value):
     if len(value) > 160:
         return False
     value = normalize_role_context(value)
+    if COURT_ROLE_GAP.fullmatch(value):
+        return True
     words = TOKENS.findall(value)
     return (GAP.fullmatch(value) is not None
             and all(INSTITUTION_WORD.fullmatch(w)
