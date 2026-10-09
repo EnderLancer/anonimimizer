@@ -79,22 +79,11 @@ def jobs(models, datasets, seeds, launch, n_docs=0):
 
 assert os.path.exists('/content/ai-camp/data/evaluate.py'), 'data/evaluate.py missing in the repo'""")
 
-CELL_HF = code("""#@title 3. Hugging Face - every trained model is pushed to a PRIVATE repo <HF_USER>/pseudo-<run>
-HF_USER = ""  #@param {type:"string"}  # your HF username or org; empty = do not push
-if HF_USER:
-    import os
-    from google.colab import userdata
-    from huggingface_hub import login
-    os.environ['HF_TOKEN'] = userdata.get('HF_TOKEN')  # Colab: left sidebar -> Secrets -> HF_TOKEN (write access), enable notebook access
-    login(os.environ['HF_TOKEN'])
-else:
-    print('HF_USER is empty: models are NOT pushed to the Hub')""")
-
-SETUP = [CELL_CODE, CELL_DATA, CELL_HF]
+SETUP = [CELL_CODE, CELL_DATA]
 
 
 def cell_plan(tag: str, folder: str, seeds: str) -> dict:
-    return code("""#@title 4. Models and the plan of this launch
+    return code("""#@title 3. Models and the plan of this launch
 TOP_N = 0  #@param {type:"integer"}        # besides MODELS, add this many of the best models of the past runs on Drive (0 = none)
 LAUNCH = ""  #@param {type:"string"}       # empty = a new launch (today's date + next number); "2026-10-08_r1" continues that launch
 SEEDS = "__SEEDS__"  #@param {type:"string"}   # comma-separated; every model is trained once per seed and the leaderboard averages them
@@ -149,7 +138,7 @@ for i, m in enumerate(plan['top'], 1):
 print(f'\\n{len(JOBS)} runs on {FOLDER}:', *RUNS, sep='\\n  ')""".replace('__TAG__', tag).replace('__FOLDER__', folder).replace('__SEEDS__', seeds))
 
 
-RUN_LOOP = code("""#@title 5. Train (every run goes to its own folder runs/<model>_<tag>_<launch>[_s<seed>]; saved to Drive right after training)
+RUN_LOOP = code("""#@title 4. Train (every run goes to its own folder runs/<model>_<tag>_<launch>[_s<seed>]; saved to Drive right after training)
 import json, os, time
 n = len(JOBS); t_all = time.time(); loaded = None
 for i, j in enumerate(JOBS, 1):
@@ -161,7 +150,6 @@ for i, j in enumerate(JOBS, 1):
         use_data(j['data']); loaded = j['data']
     print(f"\\n[{i}/{n}  {int(100 * (i - 1) / n)}%] ===== {run}: {j['model']} seed {j['seed']} {j['extra']} =====", flush=True)
     opts = f" --seed {j['seed']} {j['extra']}" + (f" --n-docs {j['n_docs']}" if j['n_docs'] else '')
-    opts += f' --push-to {HF_USER}/pseudo-{run}' if HF_USER else ''
     t0 = time.time()
     # --skip-if-done: a run of this launch that is already on Drive (the notebook was restarted) is not trained again
     rc = os.system(f"python scripts/train.py --model {j['model']} --out runs/{run} --epochs {j['epochs']} --lr {j['lr']} --batch {j['batch']} "
@@ -180,7 +168,7 @@ for i, j in enumerate(JOBS, 1):
           f'({(time.time()-t0)/60:.1f} min; total {(time.time()-t_all)/60:.0f} min) -> saved to Drive', flush=True)
 print(f'\\n[{n}/{n}  100%] done in {(time.time()-t_all)/60:.0f} min')""")
 
-CPU_TIMING = code("""#@title 6. CPU inference timing (Colab CPU is slower than a laptop; use it for ranking, not absolute numbers)
+CPU_TIMING = code("""#@title 5. CPU inference timing (Colab CPU is slower than a laptop; use it for ranking, not absolute numbers)
 import json, os, subprocess, time
 from tqdm.auto import tqdm
 p = f'{DRIVE}/runs/cpu_timing_leaderboard.json'
@@ -194,9 +182,50 @@ if CPU_TIMING_DOCS:
         print(f'{run:40s} {timing[run]:5.2f} s/doc -> test (240 docs) ~ {timing[run]*240/60:4.1f} min')
     json.dump(timing, open(p, 'w'))""")
 
+# Nothing is published by itself: the cell does nothing until PUBLISH is ticked and a run is named. It calls
+# scripts/publish.py, the script that is also run by hand, so the repo name and the licence follow the same rules.
+CELL_PUBLISH = code("""#@title 7. Publish ONE model to Hugging Face - by hand: choose the run, tick PUBLISH, run the cell
+PUBLISH = False  #@param {type:"boolean"}  # unticked = only the list of the runs on Drive is shown
+RUN = ""  #@param {type:"string"}  # the run to publish: a folder of MyDrive/ai-camp/runs, as the list below and the leaderboard name it
+HF_USER = ""  #@param {type:"string"}  # your HF username or org
+HF_REPO = ""  #@param {type:"string"}  # name of the model on the Hub; empty = the name of the run
+HF_PRIVATE = False  #@param {type:"boolean"}  # False = public repo, as scripts/publish.py does by default
+# licence id of the model card. The task rules ask for an open licence; mit is the licence of the training corpus
+# lang-uk/court-decisions-uk and of the wechsel base model. A card that already exists on the Hub is not rewritten.
+HF_LICENSE = "mit"  #@param {type:"string"}
+import json, os, re, subprocess
+runs_dir = f'{DRIVE}/runs'
+on_drive = sorted(r for r in os.listdir(runs_dir) if os.path.exists(f'{runs_dir}/{r}/model/config.json'))
+mine = set(globals().get('RUNS', []))  # the runs of this launch, when cell 3 was run
+print(f'{len(on_drive)} runs with a model in {runs_dir} (* = this launch):')
+for r in on_drive:
+    cfg = json.load(open(f'{runs_dir}/{r}/config.json')) if os.path.exists(f'{runs_dir}/{r}/config.json') else {}
+    print(f"  {'*' if r in mine else ' '} {r:50s} {cfg.get('model', '')}")
+RUN, HF_USER, HF_REPO = RUN.strip(), HF_USER.strip(), HF_REPO.strip()
+if not PUBLISH:
+    print('\\nPUBLISH is not ticked: nothing is published')
+elif RUN not in on_drive:
+    print(f'\\nNOT published: no run «{RUN}» with a model on Drive - copy a name from the list into RUN')
+elif not HF_USER:
+    print('\\nNOT published: HF_USER is empty')
+else:
+    from google.colab import userdata
+    os.environ['HF_TOKEN'] = userdata.get('HF_TOKEN')  # Colab: left sidebar -> Secrets -> HF_TOKEN (write access), enable notebook access
+    tag = re.search(r'_(v\\d+[a-z]*)_\\d{4}-', RUN)  # wechsel_base_v7large_2026-10-09_r1 -> v7large
+    data = f'the synthetic dataset `{tag.group(1)}`' if tag else 'a synthetic dataset'
+    note = (f'Trained on {data}: court decisions of the Unified State Register of Court Decisions of Ukraine whose anonymised '
+            'fragments are filled with generated values. The generated addresses come from the Ukrposhta directory and from '
+            'OpenStreetMap (© OpenStreetMap contributors, ODbL).')
+    repo = f'{HF_USER}/{HF_REPO or RUN}'
+    print(f"\\npublishing {RUN} -> https://huggingface.co/{repo} ({'private' if HF_PRIVATE else 'PUBLIC'}, licence {HF_LICENSE}) ...", flush=True)
+    cmd = ['python', 'scripts/publish.py', '--model', f'{runs_dir}/{RUN}', '--repo', repo, '--license', HF_LICENSE, '--note', note,
+           '--message', f'Upload {RUN}'] + (['--private'] if HF_PRIVATE else [])
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    print(f'published: {r.stdout.strip()}' if r.returncode == 0 else f'NOT published: {(r.stderr or r.stdout).strip()[-400:]}')""")
+
 # scripts/leaderboard.py scores the runs on the test set (once per trained model), appends new evaluations to
 # runs/test_history.jsonl and rewrites the Markdown file: leaderboard, seed averages, progress, runs over time, history.
-CELL_LEADERBOARD = code("""#@title 7. Leaderboard on the organizers' test set: this launch + every earlier run on Drive -> runs/leaderboard.md
+CELL_LEADERBOARD = code("""#@title 6. Leaderboard on the organizers' test set: this launch + every earlier run on Drive -> runs/leaderboard.md
 from IPython.display import Markdown, display
 !python scripts/leaderboard.py --drive $DRIVE --name leaderboard --all
 display(Markdown(open(f'{DRIVE}/runs/leaderboard.md', encoding='utf-8').read()))""")
@@ -204,12 +233,12 @@ display(Markdown(open(f'{DRIVE}/runs/leaderboard.md', encoding='utf-8').read()))
 
 # tag, Drive folder, default seeds, what the data is, rough A100 time of one run: base-size model / large-size model
 VARIANTS = {
-    "base": dict(tag="v5", folder="silver", seeds="42,43", what="`data/silver/` of the repo: 18k documents, 96M characters",
+    "base": dict(tag="v7", folder="silver", seeds="42,43", what="`data/silver/` of the repo: 16k documents, 83M characters",
                  time="about 20 min for a base-size model and 1 hour for a large one, so the default launch (2 large + 1 base model, "
                       "2 seeds) is about 5 hours"),
-    "large": dict(tag="v5large", folder="silver_large", seeds="42",
-                  what="`data/silver_large/`: 47k documents, 336M characters - more of the general corpus, longer Supreme Court "
-                       "decisions, every decision with an anonymised institution filled three times",
+    "large": dict(tag="v7large", folder="silver_large", seeds="42",
+                  what="`data/silver_large/`: 42k documents, 296M characters - more of the general corpus, longer Supreme Court "
+                       "decisions, every decision with an anonymised institution filled twice",
                   time="about 1.2 hours for a base-size model and 3.5 hours for a large one, so the default launch (2 large + 1 base "
                        "model, 1 seed) is about 8 hours - more than one Colab session may be needed: continue with `LAUNCH`"),
 }
@@ -232,14 +261,17 @@ def train_notebook(variant: str) -> list[dict]:
                "**Nothing is overwritten.** A launch gets a name from the date (Kyiv time) and its number on that day, "
                "`2026-10-09_r1`, `2026-10-09_r2`, …, and every run of it is saved to its own folder "
                f"`MyDrive/ai-camp/runs/<model>_{v['tag']}_<launch>[_s<seed>]/`, e.g. `wechsel_base_{v['tag']}_2026-10-09_r1_s43` (seed 42 "
-               "has no suffix). With `HF_USER` set the model is also pushed to the private repo `<HF_USER>/pseudo-<run>`. The plan "
+               "has no suffix). Nothing goes to Hugging Face by itself: the last cell publishes one run "
+               "that you name, and only when `PUBLISH` is ticked - through `scripts/publish.py`, to `<HF_USER>/<HF_REPO or the run name>`, "
+               "public unless `HF_PRIVATE` is ticked, with a model card that names the licence (`HF_LICENSE`, mit by default), the "
+               "base model and the sources of the training data. The plan "
                f"of a launch (chosen models, runs) is kept in `runs/launches/<launch>_{v['tag']}.json`.\n\n"
                "If Colab disconnects, put the launch name into `LAUNCH` and run all cells again: the finished runs are skipped "
                "and the models stay the ones chosen when the launch started. Leave `LAUNCH` empty for a new launch.\n\n"
                f"Runtime: **A100** (L4 works, ~2x slower); enable *Background execution*. One run takes {v['time']}.\n\n"
                "**Read the table «Averages over seeds».** Two identical runs differ by up to 3.5 points on the test set: a "
                "difference smaller than the spread (max − min) inside a group is noise.")
-    return [intro, *SETUP, cell_plan(v["tag"], v["folder"], v["seeds"]), RUN_LOOP, CPU_TIMING, CELL_LEADERBOARD]
+    return [intro, *SETUP, cell_plan(v["tag"], v["folder"], v["seeds"]), RUN_LOOP, CPU_TIMING, CELL_LEADERBOARD, CELL_PUBLISH]
 
 
 def check_syntax(name: str, cells: list[dict]) -> None:

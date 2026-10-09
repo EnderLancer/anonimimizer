@@ -442,6 +442,8 @@ _ANTECEDENT_CENTRAL = ((re.compile(r"Міністерств\w+\s+оборони\
                        (re.compile(r"Служб\w+\s+безпеки\s+України", re.I), ("СБУ", "СБ України")),
                        (re.compile(r"Пенсійн\w+\s+фонд\w*\s+України", re.I), ("ПФУ", "ПФ України")),
                        (re.compile(r"Національн\w+\s+поліці\w+\s+України", re.I), ("НПУ", "Нацполіція")))
+# the first short name of the bodies above that are not military (the Security Service is drawn among the military ones)
+_CENTRAL_CIVIL = {"ПФУ", "НПУ"}
 # where the phrase before «(далі - …)» starts: after the last comma, colon, line break or «до» («позовом до …»)
 _PHRASE_START = re.compile(r"[,:;\n]\s*|(?<!\w)(?:до|від|та|і|з|із)\s+(?=[А-ЯІЇЄҐ«]|військов)")
 
@@ -469,6 +471,9 @@ class OrgGenerator:
         self.names = _table() if names is None else names
         self.used: Counter = Counter()  # where the names came from: «company_court», «body_composed», …
         self.drawn: Counter = Counter()  # kinds of the bodies drawn («party_military», «holder_civil») and redraws
+        # the kind of the body that institution() / short_for() returned last («military», «civil», «company», «official»):
+        # only a military body is a label, see silver.fill.run
+        self.last_kind = ""
 
     def fresh(self, draw: Callable[[], T], seen: Seen | None) -> T:
         """A value of `draw` that the decision does not name yet; after MAX_REDRAWS tries the last one is kept.
@@ -566,7 +571,9 @@ class OrgGenerator:
 
     def military_body(self) -> Org:
         r = self.rng
-        kind = r.choices(["central", "dept", "tck", "unit", "medical", "kev", "civil_mil"], [22, 12, 22, 24, 10, 4, 6])[0]
+        # military bodies only: the kind decides whether the value is a label (silver.fill.run), so the civil bodies that
+        # handle servicemen's affairs (the Pension Fund, the police, a social department) come from civil_body()
+        kind = r.choices(["central", "dept", "tck", "unit", "medical", "kev"], [22, 12, 22, 24, 10, 4])[0]
         if kind == "central":
             return Org(*r.choice(MILITARY_CENTRAL))
         if kind == "dept":
@@ -577,18 +584,9 @@ class OrgGenerator:
             return self.unit()
         if kind == "medical":
             return self.medical()
-        if kind == "kev":
-            return r.choice([Org("Квартирно-експлуатаційний відділ", f"м. {r.choice(CITIES_GEN)}"),
-                             Org("Головне квартирно-експлуатаційне управління", "Збройних Сил України"),
-                             Org(f"{r.choice(['Київське', 'Львівське', 'Одеське', 'Харківське', 'Дніпровське'])} квартирно-експлуатаційне управління", "")])
-        # a civil body that handles servicemen's affairs
-        if name := self._real("treasury", "social", P_REAL_SOCIAL / 2):
-            self.used["body_treasury_social"] += 1
-            return real_org(name)
-        return r.choice([Org("Головне управління", f"Пенсійного фонду України в {r.choice(REGIONS_LOC)} області"),
-                         Org("Головне управління", f"Національної поліції в {r.choice(REGIONS_LOC)} області"),
-                         Org("Головне управління", "Національної поліції України"),
-                         Org("Департамент", f"соціального захисту населення {r.choice(REGIONS_LOC).replace('ій', 'ої')} обласної державної адміністрації")])
+        return r.choice([Org("Квартирно-експлуатаційний відділ", f"м. {r.choice(CITIES_GEN)}"),
+                         Org("Головне квартирно-експлуатаційне управління", "Збройних Сил України"),
+                         Org(f"{r.choice(['Київське', 'Львівське', 'Одеське', 'Харківське', 'Дніпровське'])} квартирно-експлуатаційне управління", "")])
 
     # --- companies ------------------------------------------------------------------------------------------
     def company_name(self, commercial: bool = False) -> str:
@@ -701,6 +699,7 @@ class OrgGenerator:
         r = self.rng
         starts = [m.end() for m in _PHRASE_START.finditer(antecedent)]
         phrase = antecedent[starts[-1]:].strip() if starts and len(antecedent) - starts[-1] >= 8 else antecedent.strip()
+        self.last_kind = "military"
         if m := _ANTECEDENT_UNIT.search(phrase):
             return Org(r.choice(["в/ч", "в/ч", "ВЧ", "військова частина"]), m.group(1), fixed=True)
         if m := _ANTECEDENT_TCK.search(phrase):
@@ -712,12 +711,15 @@ class OrgGenerator:
         if m := _ANTECEDENT_KEV.search(phrase):
             return Org("КЕВ", m.group(1), fixed=True)
         if m := _ANTECEDENT_REGIONAL.search(phrase):
+            self.last_kind = "civil"
             return Org(r.choice(_REGIONAL_SHORT[m.group(1)]), " ".join(m.group(2).split()), fixed=True)
         if m := _ANTECEDENT_COMPANY.search(phrase):
+            self.last_kind = "company"
             abbr = next(a for key, a in _FORM_ABBR if re.search(key, m.group(1), re.I))
             return Org(abbr, m.group(2), fixed=True)
         for rx, names in _ANTECEDENT_CENTRAL:
             if rx.match(phrase):
+                self.last_kind = "civil" if names[0] in _CENTRAL_CIVIL else "military"
                 return Org(r.choice(names), fixed=True)
         return None
 
@@ -913,6 +915,7 @@ class OrgGenerator:
         org = self.fresh(draw, seen)
         # only the body that is kept counts: a redraw is counted once, under «redraw»
         self.drawn["official" if org_kind == "official" else f"{count_as or org_kind}_{kinds[-1]}"] += 1
+        self.last_kind = kinds[-1]
         return org
 
     def unit_name(self, seen: Seen | None = None) -> Org:

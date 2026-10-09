@@ -62,8 +62,9 @@ The other types are linked by normalised keys:
 
 `assign` never raises (an odd span gives an empty mention), keeps no state between calls except caches of pure
 functions, and depends only on its arguments; the entities do not depend on the order of the spans, because mentions
-are linked in the order of their offsets. Linking is quadratic in the number of distinct entities of one type in a
-document: a decision has tens of them, and 3000 different full names in one call take seconds.
+are linked in the order of their offsets. Persons are found through an index of the stems of their names, so 3000
+different full names in one call take half a second; ІНФОРМАЦІЯ is compared pair by pair, and 3000 different
+institutions in one call take several seconds (a decision has a few).
 
 Limits
 - There is no dictionary of names. Two spellings of one first name are two names: after «Мазур Наталія Петрівна» and
@@ -835,7 +836,9 @@ _UNIT_WORDS = frozenset("частина частини частині части
 _SHORT_WORDS = frozenset("у в з і й о до на за по із зі та чи не".split())
 _ORDINAL_RE = re.compile(r"(\d+)-[а-яіїє]{1,3}")
 # An account or a page: «https://instagram.com/name_1», «@name_1», «name.surname». Only its exact spelling counts.
-_HANDLE_RE = re.compile(r"(?:https?://|www\.|@)\S+|[a-z0-9/-]*[a-z][a-z0-9/-]*[._][a-z0-9._/-]+|[^\W\d_]+_\w+", re.IGNORECASE | re.ASCII)
+_HANDLE_RE = re.compile(
+    r"(?:https?://|www\.|@)\S+|[a-z0-9/-]*[a-z][a-z0-9/-]*[._][a-z0-9._/-]+|[^\W\d_]+_\w+", re.IGNORECASE | re.ASCII
+)
 _INFO_TOKEN_RE = re.compile(rf"[^\W_]+(?:[-/{_APOSTROPHES}][^\W_]+)*")
 # Abbreviations that courts use next to the full name of the same body. An expansion only has to be the one the same
 # decision would spell out: a wrong guess («ДП» as «дочірнє підприємство») leaves two spellings apart, as before.
