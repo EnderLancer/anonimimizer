@@ -1,7 +1,7 @@
 """Налаштування запуску ner-models.yml: сценарій + overrides -> outputs для jobs.
 
-Змінні середовища: SCENARIO, KIND, MODEL, NER_OPTIONS (key=value&…), OVERRIDES (key=value через пробіл),
-GITHUB_OUTPUT, GITHUB_STEP_SUMMARY (необов'язково).
+Змінні середовища: SCENARIO, KIND, MODEL, DEFAULT_MODEL (для KIND=hf, коли MODEL порожня), NER_OPTIONS (key=value&…),
+OVERRIDES (key=value через пробіл), GITHUB_OUTPUT, GITHUB_STEP_SUMMARY (необов'язково).
 """
 import json
 import os
@@ -55,8 +55,10 @@ def resolve(env):
         cfg[k] = v
 
     kind, model = env["KIND"], env["MODEL"].strip()
+    if not model and kind == "hf":
+        model = env.get("DEFAULT_MODEL", "").strip()
     if not model:
-        fail("не задано модель")
+        fail("не задано модель (для типу hf можна задати змінну репозиторію NER_MODEL)")
     allowed = N.adapter_options(kind)
     opts = dict(parse_qsl(cfg["ner_options"]))                     # від сценарію: лише ті, що підходять типу моделі
     skipped = sorted(k for k in opts if k not in allowed)

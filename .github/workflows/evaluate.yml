@@ -3,13 +3,14 @@
 #                                              ▲         └──► data/evaluate_risk.py ──► deanonymization risk
 #   Expected result ───────────────────────────┘               (person → data links from data/test/person_links.json)
 #
-#   run.py   NER (з ner_cache.json) + regex-особи + правила (+ CRF у режимі full), злиття і псевдоніми.
+#   run.py   NER (з кешу ner_cache/) + regex-особи + правила (+ CRF у режимі full), злиття і псевдоніми.
 #            Режим model: лише NER-модель (ОСОБА), без regex-осіб, правил і CRF.
 #            Читає з тестового файлу лише id та original, анотацій не бачить.
 #
-# ner_cache.json уже містить вихід spaCy-моделі для всього тесту, тож модель у CI не завантажується
-# і шардування не потрібне: кожен режим іде кілька секунд. Потрібен лише python-crfsuite
-# (predict.py імпортує його в усіх режимах).
+# Модель — змінна репозиторію NER_MODEL (Settings → Secrets and variables → Actions → Variables), HF-репозиторій org/name,
+# напр. davidmelash/wechsel_base_v7_2026-10-09_r5_s43. ner_cache/<hf_org_name>.json уже містить її вихід для всього тесту,
+# тож модель у CI не завантажується і шардування не потрібне: кожен режим іде кілька секунд.
+# Потрібен лише python-crfsuite (predict.py імпортує його в усіх режимах).
 name: Evaluation
 
 on:
@@ -36,6 +37,7 @@ env:
   # той самий тест з виправленою розміткою 18 документів (ті самі id і тексти):
   # той самий вихід run.py оцінюється ще й проти нього; поріг min_score — за офіційним TEST_DATA
   FIXED_DATA: data/test/court_cases_fixed.jsonl
+  NER_MODEL: ${{ vars.NER_MODEL }}
 
 jobs:
   evaluate:
@@ -61,27 +63,38 @@ jobs:
         id: ner
         run: |
           if [ "${{ matrix.mode }}" = regex ]; then
-            model="no model (rules only)"
+            echo "model=no model (rules only)" | tee -a "$GITHUB_OUTPUT"
           else
-            model=$(python -c 'import os, run; kind, _, path = run.DEFAULT_NER.partition(":"); print(f"{kind}:{os.path.basename(path)} (ner_cache.json)")')
+            test -n "$NER_MODEL" || { echo "::error::variable NER_MODEL is not set (Settings → Secrets and variables → Actions → Variables)"; exit 1; }
+            spec="hf:$NER_MODEL"
+            cache=$(python -c 'import sys, ner_adapters as N; print(N.cache_path(sys.argv[1]))' "$spec")
+            echo "model=$spec" | tee -a "$GITHUB_OUTPUT"
+            echo "spec=$spec" >> "$GITHUB_OUTPUT"
+            echo "cache=$cache" >> "$GITHUB_OUTPUT"
+            echo "::notice title=NER model::$spec (cache: ${cache#"$PWD/"})"
           fi
-          echo "model=$model" | tee -a "$GITHUB_OUTPUT"
 
       - name: Check NER cache covers the test data
         if: matrix.mode != 'regex'
+        env:
+          NER_CACHE: ${{ steps.ner.outputs.cache }}
         run: |
           python - <<'EOF'
           import json, os
-          cache = json.load(open("ner_cache.json", encoding="utf8"))
+          path = os.environ["NER_CACHE"]
+          assert os.path.exists(path), f"NER cache {path} is missing; commit ner_cache/ for this model"
+          cache = json.load(open(path, encoding="utf8"))
           ids = [str(json.loads(l)["id"]) for l in open(os.environ["TEST_DATA"], encoding="utf8") if l.strip()]
           missing = [i for i in ids if i not in cache]
-          assert not missing, f"{len(missing)} documents are not in ner_cache.json, e.g. {missing[:5]}"
+          assert not missing, f"{len(missing)} documents are not in {path}, e.g. {missing[:5]}"
           EOF
 
       - name: "Run pipeline: ${{ steps.ner.outputs.model }}"
+        env:
+          NER_SPEC: ${{ steps.ner.outputs.spec }}
         run: |
           mkdir -p out
-          python run.py "$TEST_DATA" out/submission.jsonl --mode ${{ matrix.mode }}
+          python run.py "$TEST_DATA" out/submission.jsonl --mode ${{ matrix.mode }} ${NER_SPEC:+--ner "$NER_SPEC"}
 
       - name: Check against expected result
         run: |
@@ -96,11 +109,18 @@ jobs:
       - name: "Result %: ${{ steps.ner.outputs.model }}"
         env:
           MIN_SCORE: ${{ inputs.min_score || vars.MIN_SCORE }}
-          NER_MODEL: ${{ steps.ner.outputs.model }}
+          NER_SPEC: ${{ steps.ner.outputs.spec }}
+          NER_CACHE: ${{ steps.ner.outputs.cache }}
         run: |
           report() { python -c 'import json, sys; sys.path.insert(0, "data"); import evaluate; evaluate.print_report(json.load(open(sys.argv[1], encoding="utf8")))' "$1"; }
           {
             echo "### Mode: \`${{ matrix.mode }}\`"
+            if [ "${{ matrix.mode }}" = regex ]; then
+              echo "**NER model:** none (rules only)"
+            else
+              echo "**NER model:** [\`$NER_MODEL\`](https://huggingface.co/$NER_MODEL) (\`$NER_SPEC\`, output from \`${NER_CACHE#"$PWD/"}\`)"
+            fi
+            echo
             echo "Original gold \`$TEST_DATA\`"
             echo '```'
             report out/result.json

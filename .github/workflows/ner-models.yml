@@ -20,7 +20,7 @@
 # Приватні моделі: секрет репозиторію HF_TOKEN (Settings → Secrets and variables → Actions) з токеном
 # спільного акаунта Hugging Face, достатньо прав read. Токен потрапляє лише в jobs ner.
 name: NER model evaluation
-run-name: "NER: ${{ inputs.model_type }}:${{ inputs.model }} [${{ inputs.scenario }}]"
+run-name: "NER: ${{ inputs.model_type }}:${{ inputs.model || vars.NER_MODEL }} [${{ inputs.scenario }}]"
 
 on:
   workflow_dispatch:
@@ -36,9 +36,9 @@ on:
         options: [hf, gliner, spacy]
         default: hf
       model:
-        description: "Репозиторій HF (org/name) або spaCy-пакет / шлях"
-        required: true
-        default: "dslim/bert-base-NER"
+        description: "Репозиторій HF (org/name) або spaCy-пакет / шлях; порожньо (тип hf) — змінна репозиторію NER_MODEL"
+        required: false
+        default: ""
       ner_labels:
         description: "Мітки моделі → типи через пробіл: @pii (набір PII-міток) LOC=АДРЕСА ORG= (порожньо — лише імена → ОСОБА)"
         default: ""
@@ -89,6 +89,7 @@ jobs:
           SCENARIO: ${{ inputs.scenario }}
           KIND: ${{ inputs.model_type }}
           MODEL: ${{ inputs.model }}
+          DEFAULT_MODEL: ${{ vars.NER_MODEL }}
           NER_OPTIONS: ${{ inputs.ner_options }}
           OVERRIDES: ${{ inputs.overrides }}
         run: python .github/scripts/resolve_run.py
