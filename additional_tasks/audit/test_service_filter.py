@@ -1,4 +1,5 @@
 """Run: python -m unittest additional_tasks.audit.test_service_filter"""
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -427,6 +428,41 @@ class ServiceFilterTests(unittest.TestCase):
     def test_institutional_contacts(self):
         self.assertTrue(detect("Телефон канцелярії: +380501234567", ["+380501234567"], "НОМЕР")[0]["excluded"])
         self.assertFalse(detect("Телефон адвоката: +380501234567", ["+380501234567"], "НОМЕР")[0]["excluded"])
+
+    def test_court_letterhead_phones_and_model_fragments(self):
+        examples = (
+            ("ГОСПОДАРСЬКИЙ СУД\nДНІПРОПЕТРОВСЬКОЇ ОБЛАСТІ\n"
+             "вул. Володимира Винниченка 1, м. Дніпро, 49027\n"
+             "E-mail: inbox@dp.arbitr.gov.ua, тел. (056) 377-18-49, \u00a0fax (056) 377-38-63\n\nУХВАЛА",
+             ["(056) 377-18-49", "377-18", "(056) 377-38-63"]),
+            ("ГОСПОДАРСЬКИЙ СУД ХМЕЛЬНИЦЬКОЇ ОБЛАСТІ\n\n"
+             "29000, м. Хмельницький, майдан Незалежності, 1 тел. 71-81-84, факс 71-81-98",
+             ["71-81-84", "71-81-98"]),
+            ("УКРАЇНА\nВЕРХОВНИЙ СУД\nТелефон: +380501234567",
+             ["+380501234567"]),
+        )
+        for text, values in examples:
+            for kind in ("НОМЕР", "ІНФОРМАЦІЯ"):
+                with self.subTest(text=text, kind=kind):
+                    self.assertTrue(all(c["excluded"] for c in detect(text, values, kind)))
+
+    def test_letterhead_contact_scope_and_private_contacts(self):
+        heading = "ГОСПОДАРСЬКИЙ СУД ХМЕЛЬНИЦЬКОЇ ОБЛАСТІ\n\n"
+        for body in (
+            "УХВАЛА\nтел. 71-81-84",
+            "Позивач ОСОБА_1\nтел. 71-81-84",
+            "Телефон адвоката: 71-81-84",
+            "м. Хмельницький, особистий телефон: 71-81-84",
+            "Суд повідомив контакт: тел. 71-81-84",
+            "Невідомий рядок\nтел. 71-81-84",
+        ):
+            with self.subTest(body=body):
+                self.assertFalse(detect(heading + body, ["71-81-84"], "НОМЕР")[0]["excluded"])
+        self.assertFalse(detect("тел. 71-81-84", ["71-81-84"], "НОМЕР")[0]["excluded"])
+        text = heading + "тел. 71-81-84\nУХВАЛА\nтел. 71-81-84"
+        spans = [{"start": m.start(), "end": m.end(), "value": m.group(), "type": "НОМЕР"}
+                 for m in re.finditer("71-81-84", text)]
+        self.assertEqual([c["excluded"] for c in mark_service_candidates(text, spans)], [True, False])
 
     def test_service_number_categories_and_layout(self):
         examples = (

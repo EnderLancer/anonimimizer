@@ -4,7 +4,7 @@ from urllib.parse import urlsplit
 
 import predict_trf as P
 
-SERVICE_FILTER_VERSION = 8
+SERVICE_FILTER_VERSION = 9
 
 # Match labels and complete values in the original text, independently of
 # detector boundaries. NER may return only a fragment of the full number.
@@ -33,10 +33,60 @@ PRIVATE_NUMBER = re.compile(
     rf"номер\w*\s+запис\w*|договор\w*|контракт\w*|квитанці\w*)"
     rf"{NUMBER_SEPARATOR}(?P<value>{NUMBER_VALUE})(?!\w|[/\d-])", re.I)
 
+LETTERHEAD_COURT = re.compile(
+    r"(?:[А-ЯІЇЄҐ’'ʼ-]+[ \t]+)*(?:СУД|СУД УКРАЇНИ)"
+    r"(?:[ \t]+[А-ЯІЇЄҐ’'ʼ-]+)*")
+LETTERHEAD_PHONE = re.compile(
+    r"\b(?:телефон|тел\.|факс|fax)\s*[:—–-]?\s*"
+    r"(?P<value>\+?\(?\d(?:[\d ().-]*\d)?)(?!\w)", re.I)
+
+
+def letterhead_phone_regions(text):
+    """Bind contacts to a standalone court heading and its contact lines only."""
+    regions = []
+    position = 0
+    court_seen = False
+    for line in text.splitlines(keepends=True):
+        start = position
+        position += len(line)
+        if position > 1000:
+            break
+        value = line.strip()
+        if not value:
+            continue
+        if not court_seen:
+            if value == "УКРАЇНА":
+                continue
+            if (not LETTERHEAD_COURT.fullmatch(value)
+                    or not re.search(r"(?:ГОСПОДАРСЬКИЙ|РАЙОННИЙ|МІСЬКИЙ|АПЕЛЯЦІЙНИЙ|"
+                                     r"ОКРУЖНИЙ|ВЕРХОВНИЙ|АДМІНІСТРАТИВНИЙ)\b", value)):
+                break
+            court_seen = True
+            continue
+        # A split regional name belongs to the heading, not to the body.
+        if re.fullmatch(r"[А-ЯІЇЄҐ’'ʼ -]+ ОБЛАСТІ", value):
+            continue
+        # Stop at prose, participant details or a document heading. Blank
+        # lines are allowed because published letterheads often contain them.
+        if (PARTY.search(value) or P.PERSONAL_CTX.search(value)
+                or re.search(r"\b(?:адвокат\w*|судд\w*|представник\w*|особист\w*|"
+                             r"мобільн\w*|розглянув\w*|повідом\w*|встанов\w*)\b", value, re.I)):
+            break
+        if not re.match(r"(?:\d{5}\s*,?\s*|вул\.|вулиця\b|майдан\b|"
+                        r"проспект\b|площа\b|м\.|тел\.|телефон\b|"
+                        r"факс\b|fax\b|E-mail\b|email\b)", value, re.I):
+            break
+        for match in LETTERHEAD_PHONE.finditer(line):
+            if 6 <= len(re.sub(r"\D", "", match.group("value"))) <= 12:
+                a, b = match.span("value")
+                regions.append((start + a, start + b,
+                                "Телефон або факс суду в блоці реквізитів шапки"))
+    return regions
+
 
 def service_number_regions(text):
     """Only explicit labels prove a service category; proximity does not."""
-    regions = []
+    regions = letterhead_phone_regions(text)
     for pattern, reason in (
         (CASE_NUMBER, "Номер судової справи"),
         (COURT_PROCEEDING, "Номер судового провадження"),
@@ -286,7 +336,8 @@ def service_information_regions(text):
     # A model can label an institutional phone as INFORMATION rather than
     # NUMBER. Keep the same explicit contact rule for either label.
     for start, end, reason in service_number_regions(text):
-        if (reason == "Телефон або факс установи за явним контекстом"
+        if (reason in ("Телефон або факс установи за явним контекстом",
+                       "Телефон або факс суду в блоці реквізитів шапки")
                 and not private_information_context(text, start, end)):
             regions.append((start, end, "Контакт установи за явним контекстом"))
     for match in P.DATE_ALL_RE.finditer(text):
