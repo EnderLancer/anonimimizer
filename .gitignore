@@ -30,6 +30,9 @@ datagen/.venv/
 train/.venv/
 train/runs/
 
+# повні конверсії train-parquet у схему тесту (підвибірки по 500 документів лежать у git)
+data/test/*_full*.jsonl
+
 # OOD-набір: задачі агентів і проміжні файли регенеруються
 data/ood/tasks*/
 data/ood/01_candidates.jsonl

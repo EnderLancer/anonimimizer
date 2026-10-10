@@ -177,6 +177,9 @@ class SpacyAdapter(NerAdapter):
 
     def __init__(self, name: str, batch_size: int = 1):
         import spacy
+        if not os.path.exists(name) and re.fullmatch(r"[\w.-]+/[\w.-]+", name):  # org/repo на HF: теку без .whl
+            from huggingface_hub import snapshot_download
+            name = snapshot_download(name, ignore_patterns=["*.whl"], token=hf_token())
         self.nlp = spacy.load(name)
         self.batch_size = batch_size
 

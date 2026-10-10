@@ -62,6 +62,7 @@ python run.py cases.jsonl out.jsonl --mode model --ner hf:davidmelash/wechsel_ba
 ## Запуск
 
 ```bash
+python run.py cases.jsonl out.jsonl --mode clean_model   # сирий вихід NER-моделі: без постобробки, фільтрів, правил і кластеризації
 python run.py cases.jsonl out.jsonl --mode model         # 0. лише NER-модель (ОСОБА), без правил
 python run.py cases.jsonl out.jsonl --mode regex         # 1. лише правила
 python run.py cases.jsonl out.jsonl --mode model_regex   # 2. NER-модель + правила (за замовчуванням, найкраще)

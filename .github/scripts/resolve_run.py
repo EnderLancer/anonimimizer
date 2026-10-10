@@ -17,6 +17,9 @@ DEFAULTS = {
     "shards": "8",
     "limit": "",
     "data": "data/test/court_cases.jsonl",
+    # підвибірки train-parquet у схемі тесту (datagen/scripts/parquet_to_court_cases.py): NER рахується й для них,
+    # режими оцінюються на них окремо від основних даних; порожньо — без них
+    "larger": "data/test/court_cases_larger_data_set.jsonl data/test/court_cases_larger_data_set_2.jsonl",
     "cosine": "0",
     "cosine_model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
     "fail_below": "",
@@ -27,15 +30,15 @@ SCENARIOS = {
     # два режими з моделлю на всьому тесті
     "standard": {},
     # перевірити, що модель завантажується й дає розумний вихід: 20 документів, хвилини
-    "quick": {"shards": "2", "limit": "20"},
+    "quick": {"shards": "2", "limit": "20", "larger": ""},
     # те саме, що standard, плюс базова лінія без моделі (regex)
-    "compare": {"modes": "regex,model,model_regex"},
+    "compare": {"modes": "regex,clean_model,model,model_regex"},
     # швидший інференс: int8-квантизація (лише hf) і більше паралельних jobs
     "fast": {"shards": "16", "ner_options": "quantize=1"},
     # усі режими й cosine similarity
-    "thorough": {"modes": "regex,model,model_regex", "cosine": "1"},
+    "thorough": {"modes": "regex,clean_model,model,model_regex", "cosine": "1"},
 }
-MODES = ("regex", "model", "model_regex")
+MODES = ("regex", "clean_model", "model", "model_regex")
 
 
 def fail(msg):
@@ -92,6 +95,7 @@ def resolve(env):
         "n_shards": str(n),
         "limit": cfg["limit"],
         "data": cfg["data"],
+        "larger": cfg["larger"],
         "cosine": str(cosine).lower(),
         "cosine_model": cfg["cosine_model"],
         "fail_below": cfg["fail_below"],
