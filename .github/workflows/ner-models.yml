@@ -69,6 +69,7 @@ jobs:
       n_shards: ${{ steps.spec.outputs.n_shards }}
       limit: ${{ steps.spec.outputs.limit }}
       data: ${{ steps.spec.outputs.data }}
+      datasets: ${{ steps.datasets.outputs.datasets }}
       cosine: ${{ steps.spec.outputs.cosine }}
       cosine_model: ${{ steps.spec.outputs.cosine_model }}
       fail_below: ${{ steps.spec.outputs.fail_below }}
@@ -94,20 +95,33 @@ jobs:
           OVERRIDES: ${{ inputs.overrides }}
         run: python .github/scripts/resolve_run.py
 
-      - name: Prepare data
+      - name: Prepare datasets
+        id: datasets
         env:
           TEST_DATA: ${{ steps.spec.outputs.data }}
           LIMIT: ${{ steps.spec.outputs.limit }}
-        run: bash .github/scripts/prepare_data.sh
+        run: |
+          python - <<'EOF'
+          import json, os, subprocess
+          datasets = [{"name": "primary", "data": os.environ["TEST_DATA"]}]
+          if os.environ["TEST_DATA"] == "data/test/court_cases.jsonl":
+              datasets.append({"name": "court_cases_lates", "data": "data/test/court_cases_lates.jsonl"})
+          for dataset in datasets:
+              subprocess.run(["bash", ".github/scripts/prepare_data.sh"], env=dict(os.environ, TEST_DATA=dataset["data"]), check=True)
+              os.rename("out/data.jsonl", f"out/data-{dataset['name']}.jsonl")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf8") as output:
+              print("datasets=" + json.dumps(datasets), file=output)
+          EOF
 
       # кеш виходу моделі між запусками: та сама модель з тими самими опціями, ті самі дані, той самий адаптер
       - name: NER cache key
         id: key
         env:
           NER: ${{ steps.spec.outputs.ner }}
+          DATASETS: ${{ steps.datasets.outputs.datasets }}
         run: |
           h() { sha256sum | cut -c1-16; }
-          echo "cache_key=ner-v1-$(printf '%s' "$NER" | h)-$(cat out/data.jsonl ner_adapters.py | h)" | tee -a "$GITHUB_OUTPUT"
+          echo "cache_key=ner-v2-$(printf '%s' "$NER" | h)-$({ printf '%s' "$DATASETS"; cat out/data-*.jsonl ner_adapters.py; } | h)" | tee -a "$GITHUB_OUTPUT"
 
       - name: Restore NER cache
         id: restore
@@ -129,16 +143,17 @@ jobs:
           if-no-files-found: error
 
   ner:
-    name: NER inference (${{ matrix.shard }})
+    name: NER inference (${{ matrix.dataset.name }}, ${{ matrix.shard }})
     needs: setup
     if: needs.setup.outputs.needs_model == 'true' && needs.setup.outputs.cached != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     strategy:
       matrix:
+        dataset: ${{ fromJSON(needs.setup.outputs.datasets) }}
         shard: ${{ fromJSON(needs.setup.outputs.shards) }}
     env:
-      TEST_DATA: ${{ needs.setup.outputs.data }}
+      TEST_DATA: ${{ matrix.dataset.data }}
       LIMIT: ${{ needs.setup.outputs.limit }}
     steps:
       - uses: actions/checkout@v5
@@ -182,7 +197,7 @@ jobs:
 
       - uses: actions/upload-artifact@v6
         with:
-          name: ner-part-${{ matrix.shard }}
+          name: ner-part-${{ matrix.dataset.name }}-${{ matrix.shard }}
           path: out/ner-part-${{ matrix.shard }}.json
           if-no-files-found: error
 
@@ -191,7 +206,7 @@ jobs:
     needs: [setup, ner]
     runs-on: ubuntu-latest
     env:
-      TEST_DATA: ${{ needs.setup.outputs.data }}
+      DATASETS: ${{ needs.setup.outputs.datasets }}
       LIMIT: ${{ needs.setup.outputs.limit }}
     steps:
       - uses: actions/checkout@v5
@@ -204,15 +219,17 @@ jobs:
         with:
           pattern: ner-part-*
           path: parts/
-          merge-multiple: true
-
-      - name: Prepare data
-        run: bash .github/scripts/prepare_data.sh
 
       - name: Merge
         env:
           NER: ${{ needs.setup.outputs.ner }}
-        run: python ner_adapters.py merge out/data.jsonl --ner "$NER" parts/*.json
+        run: |
+          while IFS=$'\t' read -r dataset data; do
+            TEST_DATA="$data" bash .github/scripts/prepare_data.sh
+            cache_file=$(python ner_adapters.py merge out/data.jsonl --ner "$NER" parts/ner-part-"$dataset"-*/*.json)
+            mkdir -p "ner_cache/$dataset"
+            mv "$cache_file" "ner_cache/$dataset/"
+          done < <(printf '%s' "$DATASETS" | jq -r '.[] | [.name, .data] | @tsv')
 
       - uses: actions/upload-artifact@v6
         with:
@@ -226,7 +243,7 @@ jobs:
           key: ${{ needs.setup.outputs.cache_key }}
 
   evaluate:
-    name: Evaluate (${{ matrix.mode }})
+    name: Evaluate (${{ matrix.dataset.name }}, ${{ matrix.mode }})
     needs: [setup, merge]
     # вихід моделі є з merge, з кешу попереднього запуску, або режими взагалі без моделі
     if: >-
@@ -237,9 +254,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        dataset: ${{ fromJSON(needs.setup.outputs.datasets) }}
         mode: ${{ fromJSON(needs.setup.outputs.modes) }}
     env:
-      TEST_DATA: ${{ needs.setup.outputs.data }}
+      TEST_DATA: ${{ matrix.dataset.data }}
+      DATASET: ${{ matrix.dataset.name }}
       LIMIT: ${{ needs.setup.outputs.limit }}
       NER: ${{ needs.setup.outputs.ner }}
       MODE: ${{ matrix.mode }}
@@ -262,7 +281,13 @@ jobs:
         if: matrix.mode != 'regex'
         with:
           name: ner-cache
-          path: ner_cache/
+          path: cached/
+
+      - name: Select dataset NER cache
+        if: matrix.mode != 'regex'
+        run: |
+          mkdir -p ner_cache
+          cp cached/"$DATASET"/*.json ner_cache/
 
       - name: Prepare data
         run: bash .github/scripts/prepare_data.sh
@@ -283,7 +308,7 @@ jobs:
         env:
           COSINE: ${{ needs.setup.outputs.cosine }}
           COSINE_MODEL: ${{ needs.setup.outputs.cosine_model }}
-          FAIL_BELOW: ${{ needs.setup.outputs.fail_below }}
+          FAIL_BELOW: ${{ matrix.dataset.name == 'primary' && needs.setup.outputs.fail_below || '' }}
         run: |
           cos=(); [ "$COSINE" = "true" ] && cos=(--cosine --cosine-model "$COSINE_MODEL")
           python data/evaluate.py out/data.jsonl out/submission.jsonl --json "${cos[@]}" > out/result.json
@@ -307,7 +332,7 @@ jobs:
           # текстовий звіт з готового result.json: без другого прогону оцінки (з cosine — повторного рахування ембедингів)
           report() { python -c 'import json, sys; sys.path.insert(0, "data"); import evaluate; evaluate.print_report(json.load(open(sys.argv[1], encoding="utf8")))' "$1"; }
           {
-            echo "### Mode: \`$MODE\`, NER: \`$NER\`${NER_LABELS:+, labels: \`$NER_LABELS\`}"
+            echo "### Test: \`$TEST_DATA\`, mode: \`$MODE\`, NER: \`$NER\`${NER_LABELS:+, labels: \`$NER_LABELS\`}"
             echo '```'
             report out/result.json
             echo
@@ -340,7 +365,7 @@ jobs:
       - uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: ner-evaluation-${{ matrix.mode }}
+          name: ner-evaluation-${{ matrix.dataset.name }}-${{ matrix.mode }}
           path: |
             out/submission.jsonl
             out/result.json
@@ -363,15 +388,18 @@ jobs:
       - name: "Table: ${{ needs.setup.outputs.ner }}"
         env:
           NER: ${{ needs.setup.outputs.ner }}
+          TEST_DATA: ${{ needs.setup.outputs.data }}
         run: |
           python - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
           import glob, json, os
           types = ("ОСОБА", "АДРЕСА", "НОМЕР", "ІНФОРМАЦІЯ")
           print(f"## NER `{os.environ['NER']}`\n")
-          print("| Режим | **Бал** | " + " | ".join(types) + " | Strict F1 | Ризик ↓ | Ризик повний ↓ | B³ F1 | Cosine | Бал (випр. розмітка) | Бал (випр., без масок держорганів) |")
-          print("|---" * (len(types) + 9) + "|")
+          print("| Тест | Режим | **Бал** | " + " | ".join(types) + " | Strict F1 | Ризик ↓ | Ризик повний ↓ | B³ F1 | Cosine | Бал (випр. розмітка) | Бал (випр., без масок держорганів) |")
+          print("|---" * (len(types) + 10) + "|")
           for f in sorted(glob.glob("results/ner-evaluation-*/result.json")):
-              mode = os.path.basename(os.path.dirname(f)).removeprefix("ner-evaluation-")
+              dataset, mode = os.path.basename(os.path.dirname(f)).removeprefix("ner-evaluation-").rsplit("-", 1)
+              if dataset == "primary":
+                  dataset = os.path.basename(os.environ["TEST_DATA"]).removesuffix(".jsonl")
               r = json.load(open(f, encoding="utf8"))
               per = r["ner_relaxed"]["per_type"]
               cos = r.get("cosine_similarity")
@@ -381,7 +409,7 @@ jobs:
               fx, fx_open = gold("result_fixed.json"), gold("result_fixed_open.json")
               risk_file = os.path.join(os.path.dirname(f), "risk.json")
               risk = json.load(open(risk_file, encoding="utf8"))["deanonymization_risk"] if os.path.exists(risk_file) else None
-              print(f"| {mode} | **{r['final_score']:.4f}** | " + " | ".join(f"{per[t]['f1']:.3f}" for t in types)
+              print(f"| {dataset} | {mode} | **{r['final_score']:.4f}** | " + " | ".join(f"{per[t]['f1']:.3f}" for t in types)
                     + f" | {r['ner_strict']['macro']['f1']:.4f} | {r['deanonymization_risk_by_name']:.4f}"
                     + f" | {'' if risk is None else f'{risk:.4f}'}"
                     + f" | {r['consistency_b3']['f1']:.4f} | {'' if cos is None else f'{cos:.4f}'} | {fx} | {fx_open} |")
