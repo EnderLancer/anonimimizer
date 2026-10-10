@@ -152,7 +152,7 @@ docker/build.sh                                                  # збірка 
 docker run --rm -v "$PWD":/data pseudonymizer input.jsonl output.jsonl
 ```
 
-На тесті (240 документів, 4 ядра, ліміт 8 GB, `--network none`): 291 с, пік пам'яті 0,5 GB, образ 0,67 GB, бал 0,9011 проти 0,9023 у CI з torch fp32 (ціна int8). Деталі, інша модель, fp32, збірка для x86-64: [`docker/README.md`](docker/README.md).
+На тесті (240 документів, 4 ядра, ліміт 8 GB, `--network none`): 286 с (p50 1,2 с / p99 2,0 с на документ), пік пам'яті 0,54 GB, образ 0,67 GB, бал 0,9011 проти 0,9023 у CI з torch fp32 (ціна int8). Таблиці ресурсів і швидкості: `docker/bench.py`. Деталі, інша модель, fp32, збірка для x86-64: [`docker/README.md`](docker/README.md).
 
 ### Демо (Hugging Face Space)
 

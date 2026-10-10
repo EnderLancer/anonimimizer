@@ -39,7 +39,7 @@ COPY docker/requirements.txt /tmp/requirements.txt
 RUN pip install -r /tmp/requirements.txt && rm -rf /root/.cache/pip
 WORKDIR /app
 COPY run.py predict_trf.py regex_persons.py ner_adapters.py ner_postprocess.py /app/
-COPY docker/entrypoint.sh /app/entrypoint.sh
+COPY docker/entrypoint.sh docker/bench.py /app/
 COPY --from=export /onnx /app/models/ner
 ENV HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 TOKENIZERS_PARALLELISM=false \
     NER_SPEC=onnx:/app/models/ner MODE=model_regex NER_MODEL=${NER_MODEL} ONNX_QUANTIZE=${ONNX_QUANTIZE}
