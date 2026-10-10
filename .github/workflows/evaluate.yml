@@ -233,8 +233,17 @@ jobs:
 
       # full deanonymization risk: a person is protected only if every mention of their name
       # and every number, address and date linked to them is pseudonymized
+      # the links are keyed by document id (data/test/person_links.json): the corrected golds share the test's ids;
+      # documents without links (the larger data sets) are scored by name only
       - name: Deanonymization risk
-        run: python data/evaluate_risk.py "$TEST_DATA" out/submission.jsonl --json > out/risk.json
+        run: |
+          python data/evaluate_risk.py "$TEST_DATA" out/submission.jsonl --json > out/risk.json
+          python data/evaluate_risk.py "$FIXED_DATA" out/submission.jsonl --json > out/risk_fixed.json
+          python data/evaluate_risk.py "$FIXED_OPEN_DATA" out/submission.jsonl --json > out/risk_fixed_open.json
+          for d in $LARGER_DATA; do
+            name=$(basename "$d" .jsonl)
+            python data/evaluate_risk.py "$d" "out/submission_$name.jsonl" --json > "out/risk_$name.json"
+          done
 
       - name: "Result %: ${{ steps.ner.outputs.model }}"
         env:
@@ -242,6 +251,7 @@ jobs:
           NER_SPEC: ${{ steps.ner.outputs.spec }}
         run: |
           report() { python -c 'import json, sys; sys.path.insert(0, "data"); import evaluate; evaluate.print_report(json.load(open(sys.argv[1], encoding="utf8")))' "$1"; }
+          risk() { python -c 'import json, sys; sys.path.insert(0, "data"); import evaluate_risk; evaluate_risk.print_report(json.load(open(sys.argv[1], encoding="utf8")))' "$1"; }
           {
             echo "### Mode: \`${{ matrix.mode }}\`"
             if [ "${{ matrix.mode }}" = regex ]; then
@@ -254,18 +264,22 @@ jobs:
             echo '```'
             report out/result.json
             echo
-            python -c 'import json, sys; sys.path.insert(0, "data"); import evaluate_risk; evaluate_risk.print_report(json.load(open("out/risk.json", encoding="utf8")))'
+            risk out/risk.json
             echo '```'
             echo "<details><summary>Corrected gold <code>$FIXED_DATA</code></summary>"
             echo
             echo '```'
             report out/result_fixed.json
+            echo
+            risk out/risk_fixed.json
             echo '```'
             echo '</details>'
             echo "<details><summary>Corrected gold, state bodies unmasked <code>$FIXED_OPEN_DATA</code></summary>"
             echo
             echo '```'
             report out/result_fixed_open.json
+            echo
+            risk out/risk_fixed_open.json
             echo '```'
             echo '</details>'
             for d in $LARGER_DATA; do
@@ -273,6 +287,8 @@ jobs:
               echo
               echo '```'
               report "out/result_$(basename "$d" .jsonl).json"
+              echo
+              risk "out/risk_$(basename "$d" .jsonl).json"
               echo '```'
               echo '</details>'
             done
@@ -304,5 +320,8 @@ jobs:
             out/result_fixed.json
             out/result_fixed_open.json
             out/risk.json
+            out/risk_fixed.json
+            out/risk_fixed_open.json
+            out/risk_court_cases_larger_data_set*.json
             out/result_court_cases_larger_data_set*.json
           if-no-files-found: ignore

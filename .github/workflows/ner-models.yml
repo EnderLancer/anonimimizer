@@ -306,6 +306,8 @@ jobs:
             bash .github/scripts/prepare_data.sh >/dev/null
             python data/evaluate.py out/data_fixed.jsonl out/submission.jsonl --json > out/result_fixed.json
             python data/evaluate.py out/data_fixed_open.jsonl out/submission.jsonl --json > out/result_fixed_open.json
+            python data/evaluate_risk.py out/data_fixed.jsonl out/submission.jsonl --links data/test/person_links.json --json > out/risk_fixed.json
+            python data/evaluate_risk.py out/data_fixed_open.jsonl out/submission.jsonl --links data/test/person_links.json --json > out/risk_fixed_open.json
           fi
           # підвибірки train-parquet (їхній вихід NER порахований разом з основними даними): кожна оцінюється окремо
           args=(); for l in $NER_LABELS; do args+=(--ner-label "$l"); done
@@ -314,30 +316,36 @@ jobs:
             name=$(basename "$d" .jsonl)
             python run.py "$d" "out/submission_$name.jsonl" --mode "$MODE" --ner "$NER" "${args[@]}"
             python data/evaluate.py "$d" "out/submission_$name.jsonl" --json > "out/result_$name.json"
+            python data/evaluate_risk.py "$d" "out/submission_$name.jsonl" --links data/test/person_links.json --json > "out/risk_$name.json"
           done
           # повний ризик: зв'язки особа → дані ключуються за id документа, тож підмножина (limit) і інший файл даних
           # працюють; документи без зв'язків дають попередження, і їхній ризик рахується лише за іменами
           python data/evaluate_risk.py out/data.jsonl out/submission.jsonl --links data/test/person_links.json --json > out/risk.json
           # текстовий звіт з готового result.json: без другого прогону оцінки (з cosine — повторного рахування ембедингів)
           report() { python -c 'import json, sys; sys.path.insert(0, "data"); import evaluate; evaluate.print_report(json.load(open(sys.argv[1], encoding="utf8")))' "$1"; }
+          risk() { python -c 'import json, sys; sys.path.insert(0, "data"); import evaluate_risk; evaluate_risk.print_report(json.load(open(sys.argv[1], encoding="utf8")))' "$1"; }
           {
             echo "### Mode: \`$MODE\`, NER: \`$NER\`${NER_LABELS:+, labels: \`$NER_LABELS\`}"
             echo '```'
             report out/result.json
             echo
-            python -c 'import json, sys; sys.path.insert(0, "data"); import evaluate_risk; evaluate_risk.print_report(json.load(open("out/risk.json", encoding="utf8")))'
+            risk out/risk.json
             echo '```'
             if [ -f out/result_fixed.json ]; then
               echo "<details><summary>Corrected gold <code>$FIXED_DATA</code></summary>"
               echo
               echo '```'
               report out/result_fixed.json
+              echo
+              risk out/risk_fixed.json
               echo '```'
               echo '</details>'
               echo "<details><summary>Corrected gold, state bodies unmasked <code>$FIXED_OPEN_DATA</code></summary>"
               echo
               echo '```'
               report out/result_fixed_open.json
+              echo
+              risk out/risk_fixed_open.json
               echo '```'
               echo '</details>'
             fi
@@ -347,6 +355,8 @@ jobs:
               echo
               echo '```'
               report "$f"
+              echo
+              risk "out/risk_$(basename "$f" .json | sed 's/^result_//').json"
               echo '```'
               echo '</details>'
             done
@@ -371,6 +381,9 @@ jobs:
             out/result_fixed_open.json
             out/result_court_cases_larger*.json
             out/risk.json
+            out/risk_fixed.json
+            out/risk_fixed_open.json
+            out/risk_court_cases_larger*.json
           if-no-files-found: ignore
 
   summary:
