@@ -33,7 +33,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  TEST_DATA: data/test/court_cases.jsonl   # contains both the inputs and the expected annotations
   # the same test with corrected labels for 18 documents (same ids and texts):
   # the same run.py output is also scored against it; the min_score threshold uses the official TEST_DATA
   FIXED_DATA: data/test/court_cases_fixed.jsonl
@@ -46,12 +45,15 @@ env:
 
 jobs:
   ner:
-    name: NER inference (${{ matrix.shard }})
+    name: NER inference (${{ matrix.dataset }}, ${{ matrix.shard }})
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
       matrix:
+        dataset: [court_cases, court_cases_lates]
         shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    env:
+      TEST_DATA: data/test/${{ matrix.dataset }}.jsonl
     steps:
       - uses: actions/checkout@v5
 
@@ -82,19 +84,22 @@ jobs:
 
       - uses: actions/upload-artifact@v6
         with:
-          name: ner-part-${{ matrix.shard }}
+          name: ner-part-${{ matrix.dataset }}-${{ matrix.shard }}
           path: out/ner-part-${{ matrix.shard }}.json
           if-no-files-found: error
 
   evaluate:
-    name: Evaluate (${{ matrix.mode }})
+    name: Evaluate (${{ matrix.dataset }}, ${{ matrix.mode }})
     needs: ner
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
+        dataset: [court_cases, court_cases_lates]
         mode: [model, regex, model_regex]
+    env:
+      TEST_DATA: data/test/${{ matrix.dataset }}.jsonl
     steps:
       - uses: actions/checkout@v5
 
@@ -119,7 +124,7 @@ jobs:
       - uses: actions/download-artifact@v7
         if: matrix.mode != 'regex'
         with:
-          pattern: ner-part-*
+          pattern: ner-part-${{ matrix.dataset }}-*
           path: parts/
           merge-multiple: true
 
@@ -138,8 +143,11 @@ jobs:
           python run.py "$TEST_DATA" out/submission.jsonl --mode ${{ matrix.mode }} ${NER_SPEC:+--ner "$NER_SPEC"}
 
       - name: Check against expected result
+        run: python data/evaluate.py "$TEST_DATA" out/submission.jsonl --json > out/result.json
+
+      - name: Check against corrected gold
+        if: matrix.dataset == 'court_cases'
         run: |
-          python data/evaluate.py "$TEST_DATA" out/submission.jsonl --json > out/result.json
           python data/evaluate.py "$FIXED_DATA" out/submission.jsonl --json > out/result_fixed.json
           python data/evaluate.py "$FIXED_OPEN_DATA" out/submission.jsonl --json > out/result_fixed_open.json
 
@@ -150,49 +158,54 @@ jobs:
 
       - name: "Result %: ${{ steps.ner.outputs.model }}"
         env:
-          MIN_SCORE: ${{ inputs.min_score || vars.MIN_SCORE }}
+          MIN_SCORE: ${{ matrix.dataset == 'court_cases' && (inputs.min_score || vars.MIN_SCORE) || '' }}
           NER_SPEC: ${{ steps.ner.outputs.spec }}
         run: |
           report() { python -c 'import json, sys; sys.path.insert(0, "data"); import evaluate; evaluate.print_report(json.load(open(sys.argv[1], encoding="utf8")))' "$1"; }
           {
-            echo "### Mode: \`${{ matrix.mode }}\`"
+            echo "### Test: \`$TEST_DATA\`, mode: \`${{ matrix.mode }}\`"
             if [ "${{ matrix.mode }}" = regex ]; then
               echo "**NER model:** none (rules only)"
             else
               echo "**NER model:** [\`$NER_MODEL\`](https://huggingface.co/$NER_MODEL) (\`$NER_SPEC\`)"
             fi
             echo
-            echo "Original gold \`$TEST_DATA\`"
+            echo "Gold \`$TEST_DATA\`"
             echo '```'
             report out/result.json
             echo
             python -c 'import json, sys; sys.path.insert(0, "data"); import evaluate_risk; evaluate_risk.print_report(json.load(open("out/risk.json", encoding="utf8")))'
             echo '```'
-            echo "<details><summary>Corrected gold <code>$FIXED_DATA</code></summary>"
-            echo
-            echo '```'
-            report out/result_fixed.json
-            echo '```'
-            echo '</details>'
-            echo "<details><summary>Corrected gold, state bodies unmasked <code>$FIXED_OPEN_DATA</code></summary>"
-            echo
-            echo '```'
-            report out/result_fixed_open.json
-            echo '```'
-            echo '</details>'
+            if [ -f out/result_fixed.json ]; then
+              echo "<details><summary>Corrected gold <code>$FIXED_DATA</code></summary>"
+              echo
+              echo '```'
+              report out/result_fixed.json
+              echo '```'
+              echo '</details>'
+              echo "<details><summary>Corrected gold, state bodies unmasked <code>$FIXED_OPEN_DATA</code></summary>"
+              echo
+              echo '```'
+              report out/result_fixed_open.json
+              echo '```'
+              echo '</details>'
+            fi
           } | tee -a "$GITHUB_STEP_SUMMARY"
           python - <<'EOF'
           import json, os, sys
           score = 100 * json.load(open("out/result.json", encoding="utf8"))["final_score"]
-          fixed = 100 * json.load(open("out/result_fixed.json", encoding="utf8"))["final_score"]
-          fixed_open = 100 * json.load(open("out/result_fixed_open.json", encoding="utf8"))["final_score"]
-          print(f"Score: {score:.2f}% (corrected gold: {fixed:.2f}%, corrected with state bodies unmasked: {fixed_open:.2f}%)")
+          print(f"Score: {score:.2f}%")
+          if os.path.exists("out/result_fixed.json"):
+              fixed = 100 * json.load(open("out/result_fixed.json", encoding="utf8"))["final_score"]
+              fixed_open = 100 * json.load(open("out/result_fixed_open.json", encoding="utf8"))["final_score"]
+              print(f"Corrected gold: {fixed:.2f}%, corrected with state bodies unmasked: {fixed_open:.2f}%")
           m = os.environ.get("MIN_SCORE")
           if m and score < float(m):
               sys.exit(f"Score {score:.2f}% is below the threshold {float(m):.2f}%")
           EOF
 
       - name: Check committed results are up to date
+        if: matrix.dataset == 'court_cases'
         run: |
           if ! cmp -s out/submission.jsonl results/${{ matrix.mode }}.jsonl; then
             echo "::warning::results/${{ matrix.mode }}.jsonl differs from this run; regenerate it with run.py"
@@ -201,7 +214,7 @@ jobs:
       - uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: evaluation-results-${{ matrix.mode }}
+          name: evaluation-results-${{ matrix.dataset }}-${{ matrix.mode }}
           path: |
             out/submission.jsonl
             out/result.json
