@@ -37,6 +37,9 @@ env:
   # the same test with corrected labels for 18 documents (same ids and texts):
   # the same run.py output is also scored against it; the min_score threshold uses the official TEST_DATA
   FIXED_DATA: data/test/court_cases_fixed.jsonl
+  # ті самі виправлення, але без масок державних органів: ст. 7 Закону «Про доступ до судових рішень» і п. 5
+  # Кодифікатора ДСА захищають лише фізичних осіб, а офіційна розмітка маскує органи непослідовно
+  FIXED_OPEN_DATA: data/test/court_cases_fixed_state_bodies_open.jsonl
   NER_MODEL: ${{ vars.NER_MODEL }}
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   TOKENIZERS_PARALLELISM: "false"
@@ -141,6 +144,7 @@ jobs:
         run: |
           python data/evaluate.py "$TEST_DATA" out/submission.jsonl --json > out/result.json
           python data/evaluate.py "$FIXED_DATA" out/submission.jsonl --json > out/result_fixed.json
+          python data/evaluate.py "$FIXED_OPEN_DATA" out/submission.jsonl --json > out/result_fixed_open.json
 
       # full deanonymization risk: a person is protected only if every mention of their name
       # and every number, address and date linked to them is pseudonymized
@@ -173,12 +177,19 @@ jobs:
             report out/result_fixed.json
             echo '```'
             echo '</details>'
+            echo "<details><summary>Corrected gold, state bodies unmasked <code>$FIXED_OPEN_DATA</code></summary>"
+            echo
+            echo '```'
+            report out/result_fixed_open.json
+            echo '```'
+            echo '</details>'
           } | tee -a "$GITHUB_STEP_SUMMARY"
           python - <<'EOF'
           import json, os, sys
           score = 100 * json.load(open("out/result.json", encoding="utf8"))["final_score"]
           fixed = 100 * json.load(open("out/result_fixed.json", encoding="utf8"))["final_score"]
-          print(f"Score: {score:.2f}% (corrected gold: {fixed:.2f}%)")
+          fixed_open = 100 * json.load(open("out/result_fixed_open.json", encoding="utf8"))["final_score"]
+          print(f"Score: {score:.2f}% (corrected gold: {fixed:.2f}%, corrected with state bodies unmasked: {fixed_open:.2f}%)")
           m = os.environ.get("MIN_SCORE")
           if m and score < float(m):
               sys.exit(f"Score {score:.2f}% is below the threshold {float(m):.2f}%")
@@ -198,5 +209,6 @@ jobs:
             out/submission.jsonl
             out/result.json
             out/result_fixed.json
+            out/result_fixed_open.json
             out/risk.json
           if-no-files-found: ignore
