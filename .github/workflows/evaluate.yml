@@ -41,7 +41,7 @@ env:
   FIXED_OPEN_DATA: data/test/court_cases_fixed_state_bodies_open.jsonl
 
   # підвибірки (перші 500 документів) train-parquet у схемі тесту, див. datagen/scripts/parquet_to_court_cases.py;
-  # ner_cache.json їх не покриває, тому оцінюється лише режим regex (без NER-моделі)
+  # вихід NER-моделі для них також лежить у ner_cache.json (порахований у ner-models.yml), тож усі режими йдуть без моделі
   LARGER_DATA: data/test/court_cases_larger_data_set.jsonl data/test/court_cases_larger_data_set_2.jsonl
 
 jobs:
@@ -132,12 +132,20 @@ jobs:
               sys.exit(f"Score {score:.2f}% is below the threshold {float(m):.2f}%")
           EOF
 
-      - name: Larger data sets (rules only)
-        if: matrix.mode == 'regex'
+      - name: "Larger data sets: ${{ steps.ner.outputs.model }}"
         run: |
           for d in $LARGER_DATA; do
             name=$(basename "$d" .jsonl)
-            python run.py "$d" "out/submission_$name.jsonl" --mode regex
+            if [ "${{ matrix.mode }}" != regex ]; then
+              D="$d" python - <<'EOF'
+          import json, os
+          cache = json.load(open("ner_cache.json", encoding="utf8"))
+          ids = [str(json.loads(l)["id"]) for l in open(os.environ["D"], encoding="utf8") if l.strip()]
+          missing = [i for i in ids if i not in cache]
+          assert not missing, f"{len(missing)} documents are not in ner_cache.json, e.g. {missing[:5]}"
+          EOF
+            fi
+            python run.py "$d" "out/submission_$name.jsonl" --mode ${{ matrix.mode }}
             python data/evaluate.py "$d" "out/submission_$name.jsonl" --json > "out/result_$name.json"
             {
               echo "<details><summary>Larger data set <code>$d</code></summary>"
