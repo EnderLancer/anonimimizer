@@ -101,6 +101,7 @@ python run.py cases.jsonl out.jsonl --ner spacy:path/to/model   # за замо�
 | `spacy` | `doc.ents` | `batch_size` | `spacy` |
 | `hf` | `transformers.pipeline("token-classification")`: з агрегацією (`entity_group`) і без (`B-PER`/`I-PER` по токенах); позиції або, якщо їх немає, пошук за `word` | `aggregation`, `min_score`, `device`, `max_chars`, `overlap`, `batch_size`, `join_spaces`, `trust_remote_code` | `transformers`, `torch` |
 | `gliner` | `predict_entities` → `{start, end, label, score}` | `labels`, `threshold`, `device`, `max_chars`, `overlap`, `join_spaces` | `gliner` |
+| `onnx` | `hf`-модель, експортована `docker/export_onnx.py` (model.onnx + tokenizer.json): той самий вихід, що `hf` з `aggregation=simple` | `min_score`, `stride`, `batch_size`, `join_spaces`, `file`, `threads` | `onnxruntime`, `tokenizers` |
 
 - Мітки моделі переводяться в типи челенджу через `--ner-label МІТКА=ТИП` (повторюваний). Мітки, що вже є типами челенджу (`ОСОБА`, `АДРЕСА`, `НОМЕР`, `ІНФОРМАЦІЯ` — так розмічають моделі з `train/`), ідуть як є. За замовчуванням у ОСОБА йдуть `PER`, `PERS`, `PERSON` і частини імені з PII-моделей (`GIVEN_NAME`, `SURNAME`, `FIRST_NAME`, `LAST_NAME`, `NAME`…), решта відкидається; `МІТКА=` вимикає мітку. Не-ОСОБА фрагменти моделі йдуть у пайплайн як додаткові кандидати поруч із правилами.
 - `--ner-label @pii` вмикає набір міток PII-моделей: адреси, номери (паспорт, ІПН, IBAN, телефон, номерний знак…), дату народження, email. Тип із зірочкою (`CITY=АДРЕСА*`) — «слабка» частина: місто чи область лишаються лише в складі адреси з вулицею.
@@ -141,6 +142,17 @@ Actions → **NER model evaluation** → Run workflow (`.github/workflows/ner-mo
 Сценарії описані в `.github/scripts/resolve_run.py` (`SCENARIOS`). Порожня опція моделі означає значення адаптера за замовчуванням. Невідома для типу моделі опція в `ner_options` дає помилку ще до запуску інференсу.
 
 Для приватних моделей додайте секрет репозиторію `HF_TOKEN` (Settings → Secrets and variables → Actions) з read-токеном спільного акаунта Hugging Face. Токен передається лише в job `ner`.
+
+### Docker-образ для локального інференсу
+
+Усе в одному образі (правила, донавчена NER-модель, експортована в ONNX і квантизована в int8), інференс через ONNX Runtime на CPU, без torch в образі, без мережі під час роботи:
+
+```bash
+docker/build.sh                                                  # збірка + dist/pseudonymizer.tar
+docker run --rm -v "$PWD":/data pseudonymizer input.jsonl output.jsonl
+```
+
+На тесті (240 документів, 4 ядра, ліміт 8 GB, `--network none`): 291 с, пік пам'яті 0,5 GB, образ 0,67 GB, бал 0,9011 проти 0,9023 у CI з torch fp32 (ціна int8). Деталі, інша модель, fp32, збірка для x86-64: [`docker/README.md`](docker/README.md).
 
 ### Демо (Hugging Face Space)
 
@@ -221,6 +233,7 @@ Gradio-Space на безкоштовному акаунті можливий л�
 | `ner_postprocess.py` | складання частин сутностей NER-моделі (ім'я, адреса) перед злиттям з правилами |
 | `.github/workflows/ner-models.yml`, `.github/scripts/` | ручна оцінка з довільною NER-моделлю, сценарії запуску |
 | `space/`, `.github/workflows/deploy-space.yml` | Gradio-демо на Hugging Face Space і його автодеплой |
+| `docker/` | Docker-образ для локального інференсу: ONNX Runtime на CPU, без мережі |
 | `predict_trf.py` | усі правила (АДРЕСА, НОМЕР, ІНФОРМАЦІЯ), кластеризація осіб, злиття, нумерація псевдонімів |
 | `regex_persons.py` | regex для ОСОБА |
 | `ner_cache.json` | кеш виходу NER-моделі на тесті |

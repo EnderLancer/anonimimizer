@@ -5,6 +5,7 @@
     spacy:models/uk_ner_web_trf_13class
     hf:dslim/bert-base-NER?aggregation=first&min_score=0.6&device=0
     gliner:urchade/gliner_multi-v2.1?labels=person,address&threshold=0.4
+    onnx:models/ner_onnx?threads=4            # hf-модель у форматі ONNX (docker/export_onnx.py), лише onnxruntime
 
 Адаптер повертає «сирі» мітки моделі (PER, PERS, person…; BIO-префікси прибрано). У типи челенджу
 (ОСОБА, АДРЕСА, НОМЕР, ІНФОРМАЦІЯ) їх переводить map_labels() за label_map, тож змінити відповідність
@@ -308,6 +309,120 @@ class HFTokenClassificationAdapter(NerAdapter):
                 cursor = e
                 raw.append((a + s, a + e, x.get("entity_group") or x.get("entity") or "", float(x.get("score", 1.0))))
         return normalize(text, raw, expand_words=True, min_score=self.min_score, join_spaces=self.join_spaces)
+
+
+class _OnnxTokenizer:
+    """Мінімум інтерфейсу transformers-токенізатора, який потрібен HFTokenClassificationAdapter, поверх tokenizers."""
+
+    def __init__(self, path: str):
+        from tokenizers import Tokenizer
+        self.backend_tokenizer = Tokenizer.from_file(os.path.join(path, "tokenizer.json"))
+        cfg_file = os.path.join(path, "tokenizer_config.json")
+        cfg = json.load(open(cfg_file, encoding="utf8")) if os.path.exists(cfg_file) else {}
+        self.model_max_length = int(cfg.get("model_max_length") or 10 ** 30)
+        pad = cfg.get("pad_token")
+        pad = pad.get("content") if isinstance(pad, dict) else pad
+        self.pad_id = self.backend_tokenizer.token_to_id(pad) if pad else None
+        if self.pad_id is None:
+            self.pad_id = self.backend_tokenizer.token_to_id("<pad>") or self.backend_tokenizer.token_to_id("[PAD]") or 0
+        self._n_special = len(self.backend_tokenizer.encode("", add_special_tokens=True).ids)
+
+    def num_special_tokens_to_add(self) -> int:
+        return self._n_special
+
+    def __call__(self, text, add_special_tokens=True, **_):
+        return {"input_ids": self.backend_tokenizer.encode(text, add_special_tokens=add_special_tokens).ids}
+
+
+class _OnnxPipe:
+    """Заміна transformers.pipeline("token-classification", aggregation_strategy="simple") на onnxruntime:
+    той самий формат виходу [{entity_group, score, word, start, end}] і те саме групування токенів
+    (group_entities: B- починає групу, I- тієї ж мітки продовжує, решта — нова група; групи «O» відкидаються)."""
+
+    def __init__(self, path: str, file: str = "model.onnx", threads: int = 0):
+        import onnxruntime as ort
+        self.tokenizer = _OnnxTokenizer(path)
+        cfg = json.load(open(os.path.join(path, "config.json"), encoding="utf8"))
+        self.id2label = {int(k): v for k, v in cfg["id2label"].items()}
+        self.model = type("M", (), {})()
+        self.model.config = type("C", (), {"max_position_embeddings": cfg.get("max_position_embeddings", 512)})()
+        opts = ort.SessionOptions()
+        if threads:
+            opts.intra_op_num_threads = int(threads)
+        self.session = ort.InferenceSession(os.path.join(path, file), opts, providers=["CPUExecutionProvider"])
+        self.inputs = [i.name for i in self.session.get_inputs()]
+        self.enc = copy.deepcopy(self.tokenizer.backend_tokenizer)
+        self.enc.enable_padding(pad_id=self.tokenizer.pad_id, pad_token="<pad>")
+        if self.tokenizer.model_max_length < 10 ** 6:
+            self.enc.enable_truncation(self.tokenizer.model_max_length)
+
+    def __call__(self, chunks: list[str], batch_size: int = 8) -> list[list[dict]]:
+        out = []
+        for i in range(0, len(chunks), batch_size):
+            out.extend(self._batch(chunks[i:i + batch_size]))
+        return out
+
+    def _batch(self, chunks: list[str]) -> list[list[dict]]:
+        import numpy as np
+        encs = self.enc.encode_batch(chunks, add_special_tokens=True)
+        ids = np.array([e.ids for e in encs], dtype=np.int64)
+        mask = np.array([e.attention_mask for e in encs], dtype=np.int64)
+        feed = {"input_ids": ids}
+        if "attention_mask" in self.inputs:
+            feed["attention_mask"] = mask
+        if "token_type_ids" in self.inputs:
+            feed["token_type_ids"] = np.zeros_like(ids)
+        logits = self.session.run(None, feed)[0]
+        logits = logits - logits.max(-1, keepdims=True)
+        probs = np.exp(logits)
+        probs /= probs.sum(-1, keepdims=True)
+        pred = probs.argmax(-1)
+        result = []
+        for b, e in enumerate(encs):
+            tokens = [(self.id2label[int(pred[b, t])], float(probs[b, t, pred[b, t]]), e.offsets[t][0], e.offsets[t][1])
+                      for t in range(len(e.ids)) if e.attention_mask[t] and not e.special_tokens_mask[t]]
+            result.append(self._group(chunks[b], tokens))
+        return result
+
+    @staticmethod
+    def _tag(label: str) -> tuple[str, str]:
+        if label.startswith("B-"):
+            return "B", label[2:]
+        return "I", label[2:] if label.startswith("I-") else label
+
+    def _group(self, chunk: str, tokens: list[tuple]) -> list[dict]:
+        groups, cur = [], []
+        for tok in tokens:
+            if cur:
+                bi, tag = self._tag(tok[0])
+                if tag == self._tag(cur[-1][0])[1] and bi != "B":
+                    cur.append(tok)
+                    continue
+                groups.append(cur)
+            cur = [tok]
+        if cur:
+            groups.append(cur)
+        out = []
+        for g in groups:
+            tag = self._tag(g[0][0])[1]
+            if tag == "O":
+                continue
+            s, e = g[0][2], g[-1][3]
+            out.append({"entity_group": tag, "score": sum(t[1] for t in g) / len(g), "word": chunk[s:e], "start": s, "end": e})
+        return out
+
+
+@register("onnx")
+class OnnxTokenClassificationAdapter(HFTokenClassificationAdapter):
+    """Та сама token-classification модель у форматі ONNX через onnxruntime, без torch і transformers:
+    тека з model.onnx, config.json (id2label) і tokenizer.json (+ tokenizer_config.json), яку готує
+    docker/export_onnx.py. Вікна, межі слів і склеювання — як у hf; вихід збігається з
+    hf:...?aggregation=simple. Опції: min_score, join_spaces, stride, batch_size, file (назва .onnx), threads."""
+
+    def __init__(self, name: str, min_score: float = 0.0, max_chars: int = 1500, overlap: int = 200, batch_size: int = 8,
+                 join_spaces: int = 1, stride: int = 64, file: str = "model.onnx", threads: int = 0):
+        super().__init__(name, min_score=min_score, max_chars=max_chars, overlap=overlap, batch_size=batch_size,
+                         join_spaces=join_spaces, stride=stride, pipe=_OnnxPipe(name, file, threads))
 
 
 @register("gliner")

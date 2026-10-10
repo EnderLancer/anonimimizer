@@ -1,0 +1,10 @@
+# Контекст збірки Docker: лише модулі пайплайну і docker/.
+*
+!run.py
+!predict_trf.py
+!regex_persons.py
+!ner_adapters.py
+!ner_postprocess.py
+!docker/
+docker/*.tar
+docker/*.tar.gz

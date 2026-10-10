@@ -1,0 +1,4 @@
+# Залежності образу для інференсу: onnxruntime замість torch і transformers (у ~5 разів менший образ, швидше на CPU).
+onnxruntime>=1.18
+tokenizers>=0.19
+numpy
