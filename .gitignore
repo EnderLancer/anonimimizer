@@ -7,6 +7,8 @@ venv/
 
 # OS / editor
 .DS_Store
+.idea
+models/
 
 # Project
 out/

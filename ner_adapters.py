@@ -34,7 +34,7 @@ TYPES = ("ОСОБА", "АДРЕСА", "НОМЕР", "ІНФОРМАЦІЯ")
 # розмітка челенджу здебільшого не маскує, тож їх вмикають явно через --ner-label.
 # Моделі, донавчені на розмітці челенджу (train/, напр. davidmelash/wechsel_base), віддають самі типи: вони йдуть як є.
 DEFAULT_LABEL_MAP = {
-    **{t: t for t in TYPES},
+    **{kind: kind for kind in TYPES},
     **dict.fromkeys(("PERS", "PER", "PERSON"), "ОСОБА"),
     **dict.fromkeys(("GIVEN_NAME", "GIVENNAME", "FIRST_NAME", "FIRSTNAME", "MIDDLE_NAME", "MIDDLENAME", "SURNAME",
                      "LAST_NAME", "LASTNAME", "FAMILY_NAME", "NAME", "FULL_NAME", "FULLNAME", "NAME_STUDENT"), "ОСОБА"),
