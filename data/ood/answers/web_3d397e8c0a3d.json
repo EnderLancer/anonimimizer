@@ -1,0 +1,6 @@
+{"entities": [
+{"text": "01011, м. Київ, Кутузова, 8, кім. 109", "type": "АДРЕСА", "kind": "office"},
+{"text": "+38 (044) 285 90 30", "type": "НОМЕР", "kind": "phone"},
+{"text": "email@example.com", "type": "ІНФОРМАЦІЯ", "kind": "email"}
+],
+"notes": "І.Ф. Кураса - у назві інституту (ім.), не розмічено; email - заглушка example.com, але розмічено як email"}

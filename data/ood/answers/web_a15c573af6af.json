@@ -1,0 +1,9 @@
+{
+  "entities": [
+    {"text": "Субач Ольга Ігорівна", "type": "ОСОБА", "id": "p1"},
+    {"text": "(04596) 32-672", "type": "НОМЕР", "kind": "phone"},
+    {"text": "+38 067 66 58 897", "type": "НОМЕР", "kind": "phone"},
+    {"text": "subacholga@rambler.ru", "type": "ІНФОРМАЦІЯ", "kind": "email"},
+    {"text": "bytva_za_kyiv@ukr.net", "type": "ІНФОРМАЦІЯ", "kind": "email"}
+  ]
+}

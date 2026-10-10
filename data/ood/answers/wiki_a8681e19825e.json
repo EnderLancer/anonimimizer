@@ -1,0 +1,5 @@
+{"entities": [
+  {"text": "Джозеф Церафа", "type": "ОСОБА", "id": "p1"},
+  {"text": "Joseph Zerafa", "type": "ОСОБА", "id": "p1"},
+  {"text": "31 травня 1988", "type": "ІНФОРМАЦІЯ", "kind": "dob", "id": "p1"}
+]}

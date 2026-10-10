@@ -1,0 +1,89 @@
+# Out-of-domain evaluation: окрема метрика поруч з основною оцінкою (evaluate.yml), яку цей файл не змінює.
+#
+#   data/ood/ood_cases.jsonl ──► run.py --mode <mode> ──► data/evaluate_ood.py ──► таблиця за джерелом (news / web / wiki)
+#
+# Набір: 297 документів поза судовим доменом (новини, веб, Вікіпедія), див. data/ood/README.md.
+# Вихід spaCy-моделі для цих документів лежить у data/ood/spacy_ner.json; перед run.py він дописується в
+# ner_cache.json робочої копії (data/ood/merge_ner_cache.py), тож модель у CI не завантажується.
+# Іншу NER-модель на цьому наборі проганяє ner-models.yml з overrides: data=data/ood/ood_cases.jsonl.
+name: Out-of-domain evaluation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      min_score:
+        description: "Fail the run if the out-of-domain macro F1 (%) is below this value"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evaluation-ood-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  OOD_DATA: data/ood/ood_cases.jsonl
+
+jobs:
+  ood:
+    name: Out-of-domain (${{ matrix.mode }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [model, regex, model_regex]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Add the out-of-domain NER cache
+        if: matrix.mode != 'regex'
+        run: python data/ood/merge_ner_cache.py
+
+      - name: Run pipeline on the out-of-domain data
+        run: |
+          mkdir -p out
+          python run.py "$OOD_DATA" out/ood.jsonl --mode ${{ matrix.mode }}
+
+      - name: "Out-of-domain result: ${{ matrix.mode }}"
+        env:
+          MIN_SCORE: ${{ inputs.min_score || vars.MIN_OOD_SCORE }}
+        run: |
+          {
+            echo "### Out of domain, mode: \`${{ matrix.mode }}\`"
+            echo
+            python data/evaluate_ood.py "$OOD_DATA" out/ood.jsonl --names ${{ matrix.mode }} --bootstrap 200 --json out/ood_result.json
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          python - <<'EOF'
+          import json, os, sys
+          res = json.load(open("out/ood_result.json", encoding="utf8"))
+          score = 100 * next(iter(res["submissions"].values()))["overall"]["final_score"]
+          print(f"Out-of-domain score: {score:.2f}%")
+          m = os.environ.get("MIN_SCORE")
+          if m and score < float(m):
+              sys.exit(f"Out-of-domain score {score:.2f}% is below the threshold {float(m):.2f}%")
+          EOF
+
+      - name: Check committed results are up to date
+        run: |
+          if ! cmp -s out/ood.jsonl results/ood_${{ matrix.mode }}.jsonl; then
+            echo "::warning::results/ood_${{ matrix.mode }}.jsonl differs from this run; regenerate it with run.py"
+          fi
+
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: ood-results-${{ matrix.mode }}
+          path: |
+            out/ood.jsonl
+            out/ood_result.json
+          if-no-files-found: ignore
