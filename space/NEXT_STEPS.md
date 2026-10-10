@@ -45,7 +45,7 @@ hf spaces logs <акаунт>/anonimimizer --tail 200           # старт з�
 from gradio_client import Client
 c = Client("<акаунт>/anonimimizer")
 hl, text, ann, rows = c.predict("Позивач Коваленко Марія Іванівна, РНОКПП 3112408765, проживає за адресою: м. Київ, вул. Січових Стрільців, буд. 21, кв. 14.",
-                                "full", "spacy:dchaplinsky/uk_ner_web_trf_13class", "", api_name="/pseudonymize")
+                                "model_regex", "spacy:dchaplinsky/uk_ner_web_trf_13class", "", api_name="/pseudonymize")
 print(text)   # очікується [ОСОБА_1], [НОМЕР_1], [АДРЕСА_1]
 ```
 

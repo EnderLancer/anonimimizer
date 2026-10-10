@@ -1,15 +1,18 @@
 # Evaluation pipeline:
 #   Test data ──► run.py --mode <mode> ──► data/evaluate.py ──► result %
-#                                              ▲
-#   Expected result ───────────────────────────┘
+#                                              ▲         └──► data/evaluate_risk.py ──► deanonymization risk
+#   Expected result ───────────────────────────┘               (person → data links from data/test/person_links.json)
 #
-#   run.py   NER (з ner_cache.json) + regex-особи + правила (+ CRF у режимі full), злиття і псевдоніми.
-#            Режим model: лише NER-модель (ОСОБА), без regex-осіб, правил і CRF.
-#            Читає з тестового файлу лише id та original, анотацій не бачить.
+#   ner      the Hugging Face model on CPU, 8 parallel shards of the test (once per run, not per mode)
+#   run.py   NER (model output from ner) + regex persons + rules, merging and pseudonyms.
+#            Mode model: the NER model only (ОСОБА), no regex persons or rules.
+#            Reads only id and original from the test file, never the annotations.
 #
-# ner_cache.json уже містить вихід spaCy-моделі для всього тесту, тож модель у CI не завантажується
-# і шардування не потрібне: кожен режим іде кілька секунд. Потрібен лише python-crfsuite
-# (predict.py імпортує його в усіх режимах).
+# The NER output is cached per model and per input: the Actions cache key is the model spec plus a hash of the NER input
+# (the test and the larger data sets) and of ner_adapters.py, so a rerun on the same data with the same model skips inference.
+# The model is the repository variable NER_MODEL (Settings → Secrets and variables → Actions → Variables), a HF repo org/name,
+# e.g. davidmelash/wechsel_base_v7_2026-10-09_r5_s43. Weights are kept in the Actions cache too.
+# Private model: the repository secret HF_TOKEN (read access); it reaches only the ner jobs.
 name: Evaluation
 
 on:
@@ -26,33 +29,75 @@ on:
 permissions:
   contents: read
 
-# новий push скасовує застарілий запуск того самого PR / гілки
+# a new push cancels the stale run of the same PR / branch
 concurrency:
   group: evaluation-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   TEST_DATA: data/test/court_cases.jsonl   # contains both the inputs and the expected annotations
-  # той самий тест з виправленою розміткою 18 документів (ті самі id і тексти):
-  # той самий вихід run.py оцінюється ще й проти нього; поріг min_score — за офіційним TEST_DATA
+  # the same test with corrected labels for 18 documents (same ids and texts):
+  # the same run.py output is also scored against it; the min_score threshold uses the official TEST_DATA
   FIXED_DATA: data/test/court_cases_fixed.jsonl
   # ті самі виправлення, але без масок державних органів: ст. 7 Закону «Про доступ до судових рішень» і п. 5
   # Кодифікатора ДСА захищають лише фізичних осіб, а офіційна розмітка маскує органи непослідовно
   FIXED_OPEN_DATA: data/test/court_cases_fixed_state_bodies_open.jsonl
-
-  # підвибірки (перші 500 документів) train-parquet у схемі тесту, див. datagen/scripts/parquet_to_court_cases.py;
-  # вихід NER-моделі для них також лежить у ner_cache.json (порахований у ner-models.yml), тож усі режими йдуть без моделі
+  # sample (first 500 documents each) of the train parquet in the test schema, state bodies open
+  # (datagen/scripts/parquet_to_court_cases.py + open_state_bodies.py): scored by every mode separately; their NER output
+  # is computed together with the test's
   LARGER_DATA: data/test/court_cases_larger_data_set.jsonl data/test/court_cases_larger_data_set_2.jsonl
+  NER_MODEL: ${{ vars.NER_MODEL }}
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  TOKENIZERS_PARALLELISM: "false"
 
 jobs:
-  evaluate:
-    name: Evaluate (${{ matrix.mode }})
+  setup:
+    name: Setup
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    outputs:
+      spec: ${{ steps.key.outputs.spec }}
+      cache_key: ${{ steps.key.outputs.cache_key }}
+      cached: ${{ steps.restore.outputs.cache-hit == 'true' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: NER input and cache key
+        id: key
+        run: |
+          test -n "$NER_MODEL" || { echo "::error::variable NER_MODEL is not set (Settings → Secrets and variables → Actions → Variables)"; exit 1; }
+          bash .github/scripts/ner_input.sh
+          spec="hf:$NER_MODEL"
+          h() { sha256sum | cut -c1-16; }
+          echo "spec=$spec" >> "$GITHUB_OUTPUT"
+          echo "cache_key=ner-v1-$(printf '%s' "$spec" | h)-$(cat out/ner_input.jsonl ner_adapters.py | h)" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Restore NER cache
+        id: restore
+        uses: actions/cache/restore@v4
+        with:
+          path: ner_cache/
+          key: ${{ steps.key.outputs.cache_key }}
+
+      - name: Reuse cached NER output
+        if: steps.restore.outputs.cache-hit == 'true'
+        run: echo "::notice::NER output of $NER_MODEL on this data taken from the cache, inference skipped"
+
+      - uses: actions/upload-artifact@v6
+        if: steps.restore.outputs.cache-hit == 'true'
+        with:
+          name: ner-cache
+          path: ner_cache/
+          if-no-files-found: error
+
+  ner:
+    name: NER inference (${{ matrix.shard }})
+    needs: setup
+    if: needs.setup.outputs.cached != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
     strategy:
-      fail-fast: false
       matrix:
-        mode: [model, regex, model_regex, full]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
       - uses: actions/checkout@v5
 
@@ -60,35 +105,115 @@ jobs:
         with:
           python-version: "3.11"
 
+      - uses: astral-sh/setup-uv@v6
+
       - name: Install dependencies
-        run: pip install python-crfsuite
+        run: |
+          uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
+          uv pip install --system "transformers[sentencepiece]"
+
+      - name: Cache model weights
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: weights-hf-${{ env.NER_MODEL }}
+
+      - name: Prepare NER input
+        run: bash .github/scripts/ner_input.sh
+
+      - name: "Run NER on shard: hf:${{ env.NER_MODEL }}"
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python ner_adapters.py infer out/ner_input.jsonl --ner "hf:$NER_MODEL" --shard "${{ matrix.shard }}/8" --out "out/ner-part-${{ matrix.shard }}.json"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ner-part-${{ matrix.shard }}
+          path: out/ner-part-${{ matrix.shard }}.json
+          if-no-files-found: error
+
+  # fails if any document of the NER input is missing from the shards
+  merge:
+    name: Merge NER shards
+    needs: [setup, ner]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: ner-part-*
+          path: parts/
+          merge-multiple: true
+
+      - name: Prepare NER input
+        run: bash .github/scripts/ner_input.sh
+
+      - name: Merge
+        env:
+          NER_SPEC: ${{ needs.setup.outputs.spec }}
+        run: python ner_adapters.py merge out/ner_input.jsonl --ner "$NER_SPEC" parts/*.json
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ner-cache
+          path: ner_cache/
+          if-no-files-found: error
+
+      - uses: actions/cache/save@v4
+        with:
+          path: ner_cache/
+          key: ${{ needs.setup.outputs.cache_key }}
+
+  evaluate:
+    name: Evaluate (${{ matrix.mode }})
+    needs: [setup, merge]
+    # the NER output comes from merge or from the cache of an earlier run; the regex mode needs no model
+    if: always() && needs.setup.result == 'success' && (needs.merge.result == 'success' || needs.setup.outputs.cached == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [model, regex, model_regex]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
 
       # NER model name for the step names and the summary, so a run shows which model produced the result
       - name: NER model
         id: ner
         run: |
           if [ "${{ matrix.mode }}" = regex ]; then
-            model="no model (rules only)"
+            echo "model=no model (rules only)" | tee -a "$GITHUB_OUTPUT"
           else
-            model=$(python -c 'import os, run; kind, _, path = run.DEFAULT_NER.partition(":"); print(f"{kind}:{os.path.basename(path)} (ner_cache.json)")')
+            test -n "$NER_MODEL" || { echo "::error::variable NER_MODEL is not set (Settings → Secrets and variables → Actions → Variables)"; exit 1; }
+            spec="hf:$NER_MODEL"
+            echo "model=$spec" | tee -a "$GITHUB_OUTPUT"
+            echo "spec=$spec" >> "$GITHUB_OUTPUT"
+            echo "::notice title=NER model::$spec"
           fi
-          echo "model=$model" | tee -a "$GITHUB_OUTPUT"
 
-      - name: Check NER cache covers the test data
+      - uses: actions/download-artifact@v7
         if: matrix.mode != 'regex'
-        run: |
-          python - <<'EOF'
-          import json, os
-          cache = json.load(open("ner_cache.json", encoding="utf8"))
-          ids = [str(json.loads(l)["id"]) for l in open(os.environ["TEST_DATA"], encoding="utf8") if l.strip()]
-          missing = [i for i in ids if i not in cache]
-          assert not missing, f"{len(missing)} documents are not in ner_cache.json, e.g. {missing[:5]}"
-          EOF
+        with:
+          name: ner-cache
+          path: ner_cache/
 
       - name: "Run pipeline: ${{ steps.ner.outputs.model }}"
+        env:
+          NER_SPEC: ${{ steps.ner.outputs.spec }}
         run: |
           mkdir -p out
-          python run.py "$TEST_DATA" out/submission.jsonl --mode ${{ matrix.mode }}
+          python run.py "$TEST_DATA" out/submission.jsonl --mode ${{ matrix.mode }} ${NER_SPEC:+--ner "$NER_SPEC"}
 
       - name: Check against expected result
         run: |
@@ -96,17 +221,40 @@ jobs:
           python data/evaluate.py "$FIXED_DATA" out/submission.jsonl --json > out/result_fixed.json
           python data/evaluate.py "$FIXED_OPEN_DATA" out/submission.jsonl --json > out/result_fixed_open.json
 
+      - name: "Larger data sets: ${{ steps.ner.outputs.model }}"
+        env:
+          NER_SPEC: ${{ steps.ner.outputs.spec }}
+        run: |
+          for d in $LARGER_DATA; do
+            name=$(basename "$d" .jsonl)
+            python run.py "$d" "out/submission_$name.jsonl" --mode ${{ matrix.mode }} ${NER_SPEC:+--ner "$NER_SPEC"}
+            python data/evaluate.py "$d" "out/submission_$name.jsonl" --json > "out/result_$name.json"
+          done
+
+      # full deanonymization risk: a person is protected only if every mention of their name
+      # and every number, address and date linked to them is pseudonymized
+      - name: Deanonymization risk
+        run: python data/evaluate_risk.py "$TEST_DATA" out/submission.jsonl --json > out/risk.json
+
       - name: "Result %: ${{ steps.ner.outputs.model }}"
         env:
           MIN_SCORE: ${{ inputs.min_score || vars.MIN_SCORE }}
-          NER_MODEL: ${{ steps.ner.outputs.model }}
+          NER_SPEC: ${{ steps.ner.outputs.spec }}
         run: |
           report() { python -c 'import json, sys; sys.path.insert(0, "data"); import evaluate; evaluate.print_report(json.load(open(sys.argv[1], encoding="utf8")))' "$1"; }
           {
             echo "### Mode: \`${{ matrix.mode }}\`"
+            if [ "${{ matrix.mode }}" = regex ]; then
+              echo "**NER model:** none (rules only)"
+            else
+              echo "**NER model:** [\`$NER_MODEL\`](https://huggingface.co/$NER_MODEL) (\`$NER_SPEC\`)"
+            fi
+            echo
             echo "Original gold \`$TEST_DATA\`"
             echo '```'
             report out/result.json
+            echo
+            python -c 'import json, sys; sys.path.insert(0, "data"); import evaluate_risk; evaluate_risk.print_report(json.load(open("out/risk.json", encoding="utf8")))'
             echo '```'
             echo "<details><summary>Corrected gold <code>$FIXED_DATA</code></summary>"
             echo
@@ -120,6 +268,14 @@ jobs:
             report out/result_fixed_open.json
             echo '```'
             echo '</details>'
+            for d in $LARGER_DATA; do
+              echo "<details><summary>Larger data set <code>$d</code></summary>"
+              echo
+              echo '```'
+              report "out/result_$(basename "$d" .jsonl).json"
+              echo '```'
+              echo '</details>'
+            done
           } | tee -a "$GITHUB_STEP_SUMMARY"
           python - <<'EOF'
           import json, os, sys
@@ -131,31 +287,6 @@ jobs:
           if m and score < float(m):
               sys.exit(f"Score {score:.2f}% is below the threshold {float(m):.2f}%")
           EOF
-
-      - name: "Larger data sets: ${{ steps.ner.outputs.model }}"
-        run: |
-          for d in $LARGER_DATA; do
-            name=$(basename "$d" .jsonl)
-            if [ "${{ matrix.mode }}" != regex ]; then
-              D="$d" python - <<'EOF'
-          import json, os
-          cache = json.load(open("ner_cache.json", encoding="utf8"))
-          ids = [str(json.loads(l)["id"]) for l in open(os.environ["D"], encoding="utf8") if l.strip()]
-          missing = [i for i in ids if i not in cache]
-          assert not missing, f"{len(missing)} documents are not in ner_cache.json, e.g. {missing[:5]}"
-          EOF
-            fi
-            python run.py "$d" "out/submission_$name.jsonl" --mode ${{ matrix.mode }}
-            python data/evaluate.py "$d" "out/submission_$name.jsonl" --json > "out/result_$name.json"
-            {
-              echo "<details><summary>Larger data set <code>$d</code></summary>"
-              echo
-              echo '```'
-              python -c 'import json, sys; sys.path.insert(0, "data"); import evaluate; evaluate.print_report(json.load(open(sys.argv[1], encoding="utf8")))' "out/result_$name.json"
-              echo '```'
-              echo '</details>'
-            } | tee -a "$GITHUB_STEP_SUMMARY"
-          done
 
       - name: Check committed results are up to date
         run: |
@@ -172,5 +303,6 @@ jobs:
             out/result.json
             out/result_fixed.json
             out/result_fixed_open.json
+            out/risk.json
             out/result_court_cases_larger_data_set*.json
           if-no-files-found: ignore

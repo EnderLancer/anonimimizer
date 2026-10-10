@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""Generate the two Colab notebooks from code: colab_train_base.ipynb trains on `silver`, colab_train_large.ipynb on
-`silver_large`. Both train the best models of the past runs on Drive a fixed list of models (MODELS); TOP_N adds the best of the past runs on Drive.
+"""Generate the notebooks from code into train/notebooks/: colab_train_base.ipynb trains a fixed list of
+models (MODELS; TOP_N adds the best of the past runs on Drive) on `silver`, colab_train_large.ipynb on `silver_large`.
+vast_train_base.ipynb and vast_train_large.ipynb do the same on a rented machine with several GPUs, through scripts/launch.py.
 
     uv run scripts/make_notebooks.py
 """
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parents[1]
+OUT = HERE / "notebooks"
 
 
 def md(s: str) -> dict:
@@ -92,12 +95,13 @@ CPU_TIMING_DOCS = 30  #@param {type:"integer"}  # test docs for the CPU speed es
 # this notebook trains on one dataset. tag: folder in MyDrive/ai-camp with train.parquet, dev.parquet, dev.jsonl
 TAG, FOLDER = '__TAG__', '__FOLDER__'
 DATASETS = {TAG: FOLDER}
-# the models of every launch, chosen on 2026-10-09 (test macro F1 of 2026-10-08: wechsel_base 0.8530, xlmr_large 0.8419;
-# modern_liberta_large has no result yet). Settings are the ones the past runs used.
+# the models of every launch, chosen on 2026-10-09 (test macro F1 of 2026-10-08: wechsel_base 0.8530).
+# Settings are the ones the past runs used.
 MODELS = [
     dict(name='wechsel_base',         model='benjamin/roberta-base-wechsel-ukrainian', extra='', lr=4e-5, batch=64, accum=1, epochs=3),
-    dict(name='xlmr_large',           model='FacebookAI/xlm-roberta-large',            extra='', lr=2e-5, batch=32, accum=1, epochs=3),
-    dict(name='modern_liberta_large', model='Goader/modern-liberta-large',             extra='', lr=3e-5, batch=32, accum=1, epochs=3),
+    # windows of 2048 tokens (the model reads up to 8192): 8 of them hold as many tokens as 32 windows of 512. No result yet;
+    # if the GPU runs out of memory, add --grad-checkpointing to extra
+    dict(name='modern_liberta_large_w2048', model='Goader/modern-liberta-large', extra='--window 2048 --stride 256', lr=3e-5, batch=8, accum=1, epochs=3),
 ]
 import datetime, json, re, sys, zoneinfo
 from pathlib import Path
@@ -234,13 +238,14 @@ display(Markdown(open(f'{DRIVE}/runs/leaderboard.md', encoding='utf-8').read()))
 # tag, Drive folder, default seeds, what the data is, rough A100 time of one run: base-size model / large-size model
 VARIANTS = {
     "base": dict(tag="v7", folder="silver", seeds="42,43", what="`data/silver/` of the repo: 16k documents, 83M characters",
-                 time="about 20 min for a base-size model and 1 hour for a large one, so the default launch (2 large + 1 base model, "
-                      "2 seeds) is about 5 hours"),
-    "large": dict(tag="v7large", folder="silver_large", seeds="42",
+                 time="about 20 min for a base-size model and 1 hour for a large one, so the default launch (1 base + 1 large "
+                      "model, 2 seeds) is about 2.7 hours if windows of 2048 tokens cost what the same text in windows of 512 did "
+                      "(not measured)"),
+    "large": dict(tag="v7large", folder="silver_large", seeds="42,43",
                   what="`data/silver_large/`: 42k documents, 296M characters - more of the general corpus, longer Supreme Court "
                        "decisions, every decision with an anonymised institution filled twice",
-                  time="about 1.2 hours for a base-size model and 3.5 hours for a large one, so the default launch (2 large + 1 base "
-                       "model, 1 seed) is about 8 hours - more than one Colab session may be needed: continue with `LAUNCH`"),
+                  time="about 1.2 hours for a base-size model and 3.5 hours for a large one, so the default launch (1 base + 1 "
+                       "large model, 2 seeds) is about 9.5 hours by the same guess - more than one Colab session may be needed: continue with `LAUNCH`"),
 }
 
 
@@ -252,8 +257,9 @@ def train_notebook(variant: str) -> list[dict]:
                f"`colab_train_{other}.ipynb` does the same on the «{other}» dataset; the two can run at the same time in two Colab "
                "sessions and write to the same leaderboard.\n\n"
                "Each launch:\n\n"
-               "1. trains the three models of `MODELS`: `wechsel_base` (0.8530 on the test set on 2026-10-08), `xlmr_large` "
-               "(0.8419) and `Goader/modern-liberta-large`, a Ukrainian ModernBERT that has no result yet - each on this dataset "
+               "1. trains the two models of `MODELS`: `wechsel_base` (0.8530 on the test set on 2026-10-08) and "
+               "`Goader/modern-liberta-large`, a Ukrainian ModernBERT, with windows of 2048 tokens instead of 512 (no result "
+               "yet) - each on this dataset "
                "with every seed of `SEEDS`. `TOP_N` > 0 adds that many of the best other models of the past runs on Drive;\n"
                "2. scores every run of `MyDrive/ai-camp/runs/` on the organizers' test set (a run already scored on the current "
                "test file is not predicted again) and writes the leaderboard over all runs, old and new, to "
@@ -272,6 +278,184 @@ def train_notebook(variant: str) -> list[dict]:
                "**Read the table «Averages over seeds».** Two identical runs differ by up to 3.5 points on the test set: a "
                "difference smaller than the spread (max − min) inside a group is noise.")
     return [intro, *SETUP, cell_plan(v["tag"], v["folder"], v["seeds"]), RUN_LOOP, CPU_TIMING, CELL_LEADERBOARD, CELL_PUBLISH]
+
+
+# The notebooks for a rented machine with several GPUs (vast.ai) follow the Colab ones cell by cell. Cells 3 and 4 are
+# scripts/launch.py; Google Drive is reached through rclone (scripts/drive.sh), because a container cannot mount it.
+VAST_SETUP = code("""#@title 1. Code and the machine
+import os, subprocess, sys
+os.chdir('/workspace/ai-camp/train')  # the code is copied here from the laptop: train/scripts/vast.sh push
+if os.path.exists('/venv/main/bin') and '/venv/main/bin' not in os.environ['PATH']:
+    os.environ['PATH'] = '/venv/main/bin:' + os.environ['PATH']  # the Python environment of the vast.ai image
+os.environ.update(TRANSFORMERS_VERBOSITY='error', PYTHONWARNINGS='ignore', TOKENIZERS_PARALLELISM='false', HF_HUB_DISABLE_PROGRESS_BARS='1')
+!bash scripts/vast_setup.sh""")
+
+
+def vast_data(variant: str) -> dict:
+    return code("""#@title 2. Google Drive: the dataset and the history of the runs
+VARIANT = '__VARIANT__'
+sys.path.insert(0, 'scripts')
+from launch import VARIANTS, file_sha1
+TAG, FOLDER = VARIANTS[VARIANT]['tag'], VARIANTS[VARIANT]['folder']
+DRIVE_ON = 'gdrive:' in subprocess.run(['rclone', 'listremotes'], capture_output=True, text=True).stdout.split()
+if DRIVE_ON:
+    # as in Colab, the training data is the one of MyDrive/ai-camp/<folder>
+    !bash scripts/drive.sh data $FOLDER
+    !bash scripts/drive.sh history
+else:
+    print('Google Drive is NOT connected: the runs will stay on this machine and the data is the one copied by vast.sh push.\\n'
+          'To connect it, on the laptop: train/scripts/vast.sh drive')
+for need in ('train.parquet', 'dev.parquet', 'dev.jsonl'):
+    assert os.path.exists(f'../data/{FOLDER}/{need}'), f'{need} is missing in data/{FOLDER} - upload it to MyDrive/ai-camp/{FOLDER} or run vast.sh push'
+assert os.path.exists('../data/evaluate.py') and os.path.exists('../data/test/court_cases.jsonl'), 'data/evaluate.py or the test set is missing: vast.sh push'
+print(f"OK: data/{FOLDER}, train.parquet {file_sha1(f'../data/{FOLDER}/train.parquet')}, tag {TAG}")""".replace('__VARIANT__', variant))
+
+
+def vast_plan(seeds: str) -> dict:
+    return code("""#@title 3. Models and the plan of this launch
+TOP_N = 0            # besides MODELS, add this many of the best models of the test history (0 = none)
+LAUNCH = ""          # empty = a new launch (today's date + next number); "2026-10-09_r1" continues that launch
+SEEDS = "__SEEDS__"  # comma-separated; every model is trained once per seed and the leaderboard averages them
+N_DOCS = 0           # 0 = all; e.g. 2000 for a smoke run
+CPU_TIMING_DOCS = 30 # test docs for the CPU speed estimate (0 = skip)
+HF_PUBLISH = True    # publish every trained model as the PUBLIC repo <your HF account>/<run> (token: vast.sh hf); runs with N_DOCS are never published
+# the models are MODELS of scripts/launch.py: wechsel_base and modern_liberta_large_w2048 (windows of 2048 tokens)
+import json, re
+args = ['--variant', VARIANT] + (['--launch', LAUNCH] if LAUNCH else ['--seeds', SEEDS, '--n-docs', str(N_DOCS), '--top-n', str(TOP_N)])
+out = subprocess.run(['python', 'scripts/launch.py', *args, '--plan-only'], capture_output=True, text=True)
+print(out.stdout, out.stderr[-2000:])
+LAUNCH = re.search(r'LAUNCH = (\\S+)', out.stdout).group(1)
+plan = json.load(open(f'runs/launches/{LAUNCH}_{TAG}.json'))
+JOBS = plan['jobs']; RUNS = [j['run'] for j in JOBS]
+TIMING_RUNS = list({j['name']: j['run'] for j in reversed(JOBS)}.values())  # CPU speed depends on the model, not on the data or seed""".replace('__SEEDS__', seeds))
+
+
+VAST_TRAIN = code("""#@title 4. Train: one run per GPU; every run goes to runs/<model>_<tag>_<launch>[_s<seed>] and to Drive right after training
+# The training runs in tmux, not in this kernel: a closed tab or a stopped cell (the ■ button) does not stop it. Run the
+# cell again to follow the log, or stop it and use the next cell; to stop the training itself: !tmux kill-session -t =train_<tag>
+import time
+session, log = f'train_{TAG}', f'runs/launch_{TAG}.log'
+# '=': the exact session name; without it tmux takes train_v7 for train_v7large (it matches by prefix)
+alive = lambda: subprocess.run(['tmux', 'has-session', '-t', '=' + session], capture_output=True).returncode == 0
+if alive():
+    print(f'a launch of {TAG} is already running - following its log')
+else:
+    py = subprocess.run('command -v python', shell=True, capture_output=True, text=True).stdout.strip()
+    subprocess.run(['tmux', 'new-session', '-d', '-s', session, f"{py} scripts/launch.py --variant {VARIANT} --launch {LAUNCH}{'' if HF_PUBLISH else ' --no-publish'} 2>&1 | tee -a {log}"], check=True)
+    time.sleep(3)
+with open(log, encoding='utf-8') as f:
+    f.seek(max(0, os.path.getsize(log) - 3000))
+    while True:
+        running = alive()
+        print(f.read(), end='', flush=True)
+        if not running:
+            break
+        time.sleep(20)
+!python scripts/launch.py --variant $VARIANT --launch $LAUNCH --status""")
+
+VAST_STATUS = code("""#@title 4a. Progress - run at any time (stop cell 4 with ■ first: the training goes on)
+# per run: waiting / running (GPU, % of the steps, epoch, time left, dev F1 of the finished epochs) / done (dev F1, minutes,
+# Drive, Hugging Face) / FAILED (the error). The same from the laptop: train/scripts/vast.sh status
+!python scripts/launch.py --variant base --status
+!python scripts/launch.py --variant large --status
+!nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total --format=csv,noheader""")
+
+VAST_TIMING = code("""#@title 5. CPU inference timing (use it for ranking, not absolute numbers)
+p = 'runs/cpu_timing_leaderboard.json'
+timing = json.load(open(p)) if os.path.exists(p) else {}  # timings of earlier launches are kept
+if CPU_TIMING_DOCS:
+    !head -n $CPU_TIMING_DOCS ../data/test/court_cases.jsonl > /tmp/test_small.jsonl
+    for run in [r for r in TIMING_RUNS if os.path.exists(f'runs/{r}/model')]:  # one run per model
+        t0 = time.time()
+        subprocess.run(['python','scripts/predict.py','--model',f'runs/{run}/model','--input','/tmp/test_small.jsonl','--output',f'/tmp/{run}_cpu.jsonl','--device','cpu','--threads','4','--batch','4'], capture_output=True)
+        timing[run] = (time.time() - t0) / CPU_TIMING_DOCS
+        print(f'{run:40s} {timing[run]:5.2f} s/doc -> test (240 docs) ~ {timing[run]*240/60:4.1f} min')
+    json.dump(timing, open(p, 'w'))""")
+
+VAST_LEADERBOARD = code("""#@title 6. Leaderboard on the organizers' test set: this launch + the history of Drive -> runs/leaderboard.md, also on Drive
+from IPython.display import Markdown, display
+!bash scripts/drive.sh history
+!python scripts/leaderboard.py --drive . --name leaderboard --all
+!bash scripts/drive.sh results
+display(Markdown(open('runs/leaderboard.md', encoding='utf-8').read()))""")
+
+VAST_PUBLISH = code("""#@title 7. Publish ONE model to Hugging Face - by hand: choose the run, set PUBLISH = True, run the cell
+PUBLISH = False      # False = only the list of the runs is shown
+RUN = ""             # the run to publish: a folder of train/runs or of MyDrive/ai-camp/runs, as the list below and the leaderboard name it
+HF_USER = ""         # your HF username or org
+HF_REPO = ""         # name of the model on the Hub; empty = the name of the run
+HF_PRIVATE = False   # False = public repo, as scripts/publish.py does by default
+# licence id of the model card. The task rules ask for an open licence; mit is the licence of the training corpus
+# lang-uk/court-decisions-uk and of the wechsel base model. A card that already exists on the Hub is not rewritten.
+HF_LICENSE = "mit"
+here = sorted(r for r in os.listdir('runs') if os.path.exists(f'runs/{r}/model/config.json'))
+there = [r.rstrip('/') for r in subprocess.run(['rclone', 'lsf', 'gdrive:runs', '--dirs-only'], capture_output=True, text=True).stdout.split()] if globals().get('DRIVE_ON') else []
+mine = set(globals().get('RUNS', []))  # the runs of this launch, when cell 3 was run
+print(f'{len(here)} runs with a model on this machine (* = this launch); + = only on Drive:')
+for r in sorted(set(here) | set(there) - {'launches'}):
+    print(f"  {'*' if r in mine else ' ' if r in here else '+'} {r}")
+RUN, HF_USER, HF_REPO = RUN.strip(), HF_USER.strip(), HF_REPO.strip()
+# the token (write access) is stored by train/scripts/vast.sh hf; `hf auth login` on the instance puts it under HF_HOME
+token_files = [os.path.expanduser('~/.cache/huggingface/token'), os.path.join(os.environ.get('HF_HOME', '/workspace/.hf_home'), 'token')]
+token = os.environ.get('HF_TOKEN') or next((open(f).read().strip() for f in token_files if os.path.exists(f)), '')
+if not PUBLISH:
+    print('\\nPUBLISH is False: nothing is published')
+elif RUN not in here and RUN not in there:
+    print(f'\\nNOT published: no run «{RUN}» - copy a name from the list into RUN')
+elif not HF_USER:
+    print('\\nNOT published: HF_USER is empty')
+elif not token:
+    print('\\nNOT published: no Hugging Face token on this machine - on the laptop: train/scripts/vast.sh hf')
+else:
+    if RUN not in here:
+        !rclone copy gdrive:runs/$RUN runs/$RUN
+    tag = re.search(r'_(v\\d+[a-z]*)_\\d{4}-', RUN)  # wechsel_base_v7large_2026-10-09_r1 -> v7large
+    data = f'the synthetic dataset `{tag.group(1)}`' if tag else 'a synthetic dataset'
+    note = (f'Trained on {data}: court decisions of the Unified State Register of Court Decisions of Ukraine whose anonymised '
+            'fragments are filled with generated values. The generated addresses come from the Ukrposhta directory and from '
+            'OpenStreetMap (© OpenStreetMap contributors, ODbL).')
+    repo = f'{HF_USER}/{HF_REPO or RUN}'
+    print(f"\\npublishing {RUN} -> https://huggingface.co/{repo} ({'private' if HF_PRIVATE else 'PUBLIC'}, licence {HF_LICENSE}) ...", flush=True)
+    cmd = ['python', 'scripts/publish.py', '--model', f'runs/{RUN}', '--repo', repo, '--license', HF_LICENSE, '--note', note,
+           '--message', f'Upload {RUN}'] + (['--private'] if HF_PRIVATE else [])
+    r = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ, 'HF_TOKEN': token})
+    print(f'published: {r.stdout.strip()}' if r.returncode == 0 else f'NOT published: {(r.stderr or r.stdout).strip()[-400:]}')""")
+
+
+def vast_notebook(variant: str) -> list[dict]:
+    v = VARIANTS[variant]
+    other = "large" if variant == "base" else "base"
+    intro = md(f"# Pseudonymizer - train on the «{variant}» dataset on a machine with several GPUs (vast.ai)\n\n"
+               f"The vast.ai twin of `colab_train_{variant}.ipynb`: the same models, settings, run names and leaderboard, on "
+               f"`MyDrive/ai-camp/{v['folder']}/` (tag `{v['tag']}`) - {v['what']}. `vast_train_{other}.ipynb` does the same on the "
+               f"«{other}» dataset; the two can run at the same time on one machine - a GPU trains one model at a time.\n\n"
+               "Once per instance, on the laptop: `train/scripts/vast.sh push` (the code and the test set), "
+               "`train/scripts/vast.sh drive` (access to Google Drive), `train/scripts/vast.sh hf` (the Hugging Face token, write "
+               "access). Then `train/scripts/vast.sh ssh`, open https://localhost:8080 and this file in "
+               "`/workspace/ai-camp/train/`. After a change of the code run `vast.sh push` again.\n\n"
+               "What differs from Colab:\n\n"
+               "- the runs of a launch are trained in parallel, one per GPU, the large models first; the training runs in tmux, "
+               "so the notebook may be closed;\n"
+               "- Google Drive is not mounted: the dataset is the one of `MyDrive/ai-camp/<folder>` when that folder exists there "
+               "(otherwise the one copied from the laptop by `vast.sh push`), every run is copied to "
+               "`MyDrive/ai-camp/runs/<run>/` right after training, the leaderboard files are exchanged in cell 6;\n"
+               "- the leaderboard predicts the test set only with the models that are on this machine; the earlier runs of "
+               "Drive enter it with the test results saved there, so a run of Drive that was scored on another test file or "
+               "decoder stays in the history tables only. For the same reason `TOP_N` ranks the history as it is.\n\n"
+               "**Nothing is overwritten**: a launch gets the name `<date>_r<N>` (Kyiv time; the numbers taken on Drive are "
+               f"skipped), a run the folder `<model>_{v['tag']}_<launch>[_s<seed>]`, the plan is "
+               f"`runs/launches/<launch>_{v['tag']}.json`. To continue an interrupted launch put its name into `LAUNCH` and run all "
+               "cells again: the finished runs are skipped.\n\n"
+               "**Hugging Face.** Unlike in Colab, with `HF_PUBLISH = True` every model trained on the whole dataset is published "
+               "right after training as the **public** repo `<your HF account>/<run>` (licence mit, a model card with the base "
+               "model and the sources of the data); a smoke run (`N_DOCS`) is never published. Cell 7 publishes one run by hand, "
+               "e.g. under another name.\n\n"
+               "**Progress.** Cell 4 follows the log; cell 4a (or `train/scripts/vast.sh status` on the laptop) shows every run: "
+               "GPU, share of the steps, epoch, time left, dev F1 after each epoch, whether it reached Drive and Hugging Face, "
+               "and the error of a failed run.\n\n"
+               "**Read the table «Averages over seeds».** Two identical runs differ by up to 3.5 points on the test set: a "
+               "difference smaller than the spread (max − min) inside a group is noise.")
+    return [intro, VAST_SETUP, vast_data(variant), vast_plan(v["seeds"]), VAST_TRAIN, VAST_STATUS, VAST_TIMING, VAST_LEADERBOARD, VAST_PUBLISH]
 
 
 def check_syntax(name: str, cells: list[dict]) -> None:
@@ -295,15 +479,26 @@ def check_syntax(name: str, cells: list[dict]) -> None:
 def main() -> None:
     meta = {"accelerator": "GPU", "colab": {"provenance": []}, "kernelspec": {"display_name": "Python 3", "name": "python3"},
             "language_info": {"name": "python"}}
-    old = HERE / "colab_train.ipynb"  # the single notebook that the two replaced
-    if old.exists():
-        old.unlink()
+    OUT.mkdir(exist_ok=True)
+    for old in (HERE / "colab_train.ipynb", HERE / "vast_train.ipynb",  # the single notebooks that the pairs replaced
+                *(HERE / f"{k}_train_{v}.ipynb" for k in ("colab", "vast") for v in VARIANTS)):  # before train/notebooks/
+        if old.exists():
+            old.unlink()
     for name, cells in ((f"colab_train_{v}.ipynb", train_notebook(v)) for v in VARIANTS):
         check_syntax(name, cells)
         nb = {"cells": cells, "metadata": meta, "nbformat": 4, "nbformat_minor": 0}
-        (HERE / name).write_text(json.dumps(nb, ensure_ascii=False, indent=1), encoding="utf-8")
-        print(f"{name}: {len(cells)} cells")
-
+        (OUT / name).write_text(json.dumps(nb, ensure_ascii=False, indent=1), encoding="utf-8")
+        print(f"{OUT.relative_to(HERE)}/{name}: {len(cells)} cells")
+    sys.path.insert(0, str(HERE / "scripts"))
+    import launch  # the vast.ai notebooks train through scripts/launch.py: its datasets must be the ones described here
+    assert {k: (v["tag"], v["folder"], v["seeds"]) for k, v in VARIANTS.items()} == \
+           {k: (v["tag"], v["folder"], v["seeds"]) for k, v in launch.VARIANTS.items()}, "VARIANTS differ from scripts/launch.py"
+    vast_meta = {"kernelspec": meta["kernelspec"], "language_info": meta["language_info"]}
+    for name, cells in ((f"vast_train_{v}.ipynb", vast_notebook(v)) for v in VARIANTS):
+        check_syntax(name, cells)
+        (OUT / name).write_text(json.dumps({"cells": cells, "metadata": vast_meta, "nbformat": 4, "nbformat_minor": 0},
+                                           ensure_ascii=False, indent=1), encoding="utf-8")
+        print(f"{OUT.relative_to(HERE)}/{name}: {len(cells)} cells")
 
 if __name__ == "__main__":
     main()

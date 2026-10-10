@@ -1,0 +1,9 @@
+{"entities": [
+{"text": "Ральф Френсіс Алнвік Грей", "type": "ОСОБА", "id": "p1"},
+{"text": "Ralph Francis Alnwick Grey", "type": "ОСОБА", "id": "p1"},
+{"text": "Ральф Грей", "type": "ОСОБА", "id": "p1"},
+{"text": "Єлизаветою Другою", "type": "ОСОБА", "id": "p2"},
+{"text": "15 квітня 1910", "type": "ІНФОРМАЦІЯ", "kind": "dob", "id": "p1"},
+{"text": "17 жовтня 1999", "type": "ІНФОРМАЦІЯ", "kind": "death", "id": "p1"}
+],
+"notes": "Титул 'барон Грей Нонтон' / Baron Grey of Naunton не розмічено"}

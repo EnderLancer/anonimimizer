@@ -1,0 +1,11 @@
+{"entities": [
+{"text": "Іван Вальєхо", "type": "ОСОБА", "id": "p1"},
+{"text": "Iván Vallejo Ricafuerte", "type": "ОСОБА", "id": "p1"},
+{"text": "Iván Vallejo", "type": "ОСОБА", "id": "p1"},
+{"text": "Вальєхо", "type": "ОСОБА", "id": "p1"},
+{"text": "Іван", "type": "ОСОБА", "id": "p1"},
+{"text": "19 грудня 1959", "type": "ІНФОРМАЦІЯ", "kind": "dob", "id": "p1"},
+{"text": "Анді", "type": "ОСОБА", "id": "p2"},
+{"text": "Камілла", "type": "ОСОБА", "id": "p3"},
+{"text": "Жоао Гарсіа", "type": "ОСОБА", "id": "p4"}
+]}

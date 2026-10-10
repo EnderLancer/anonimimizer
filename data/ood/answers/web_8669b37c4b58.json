@@ -1,0 +1,15 @@
+{
+  "entities": [
+    {
+      "text": "domslugba.lviv@gmail.com",
+      "type": "ІНФОРМАЦІЯ",
+      "kind": "email"
+    },
+    {
+      "text": "(067) 985 92 80",
+      "type": "НОМЕР",
+      "kind": "phone"
+    }
+  ],
+  "notes": "Домова служба — компанія."
+}

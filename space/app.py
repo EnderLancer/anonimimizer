@@ -1,7 +1,7 @@
 """Демо псевдонімізації українських судових рішень (Hugging Face Space).
 
 Текст ──► NER-модель (будь-яка: spacy / hf / gliner, див. ner_adapters.py) ──► мітки -> типи ──► складання частин
-     ──► regex-особи + правила (+ CRF у режимі full) ──► псевдоніми ОСОБА_1, АДРЕСА_1…
+     ──► regex-особи + правила ──► псевдоніми ОСОБА_1, АДРЕСА_1…
 
 У Space модулі пайплайну лежать поруч (їх копіює .github/scripts/build_space.sh), локально — на рівень вище:
 python space/app.py
@@ -22,18 +22,18 @@ if not os.path.exists(os.path.join(HERE, "run.py")):
     sys.path.insert(0, os.path.dirname(HERE))
 
 import gradio as gr
-from huggingface_hub import snapshot_download
+from huggingface_hub import HfApi, snapshot_download
 
-DEFAULT_REPO = "dchaplinsky/uk_ner_web_trf_13class"
-DEFAULT_NER = f"spacy:{DEFAULT_REPO}"
-PRESETS = [
-    DEFAULT_NER,
+OWNER = "davidmelash"  # моделі, натреновані в train/; лише їм дозволено trust_remote_code
+OWNER_SKIP = {"davidmelash/wechsel_base"}
+DEFAULT_NER = "hf:davidmelash/wechsel_base_v7_2026-10-09_r5_s43"
+OTHER_PRESETS = [
+    "spacy:dchaplinsky/uk_ner_web_trf_13class",
     "gliner:urchade/gliner_multi-v2.1?labels=person,address,phone number&threshold=0.4",
     "hf:dslim/bert-base-NER?aggregation=first&min_score=0.6",
 ]
 MODES = {
-    "full": "3. Модель + правила + CRF (найкраще)",
-    "model_regex": "2. Модель + правила",
+    "model_regex": "2. Модель + правила (найкраще)",
     "regex": "1. Лише правила",
     "model": "0. Лише модель",
 }
@@ -43,12 +43,34 @@ import ner_adapters as N  # noqa: E402
 import ner_postprocess as NP  # noqa: E402
 import run as R  # noqa: E402
 
-TAGGER = R.load_tagger()
+
+def is_owner_model(name: str) -> bool:
+    return re.fullmatch(rf"{OWNER}/[\w.-]+", name) is not None
+
+
+def owner_models() -> list[str]:
+    """Token-classification моделі акаунта OWNER (список — на старті Space); без мережі — лише DEFAULT_NER."""
+    try:
+        ids = sorted(m.id for m in HfApi().list_models(author=OWNER, pipeline_tag="token-classification",
+                                                       token=N.hf_token()))
+    except Exception as e:
+        print(f"список моделей {OWNER}: {type(e).__name__}: {e}")
+        ids = []
+    specs = [f"hf:{i}" for i in ids if i not in OWNER_SKIP]
+    return [DEFAULT_NER] + [s for s in specs if s != DEFAULT_NER]
+
+
+PRESETS = owner_models() + OTHER_PRESETS
 
 
 def resolve_spec(spec: str) -> str:
-    """spaCy-модель з HF (spacy:org/repo) завантажується як тека (без .whl на 1,3 ГБ) і вантажиться за шляхом."""
-    kind, name, _ = N.parse_spec(spec)
+    """spaCy-модель з HF (spacy:org/repo) завантажується як тека (без .whl на 1,3 ГБ) і вантажиться за шляхом.
+    Моделям OWNER вмикається trust_remote_code (токенізатор LiBERTa), будь-якій іншій він заборонений."""
+    kind, name, opts = N.parse_spec(spec)
+    if opts.get("trust_remote_code") and not is_owner_model(name):
+        raise ValueError(f"trust_remote_code дозволено лише для моделей {OWNER}/…")
+    if kind == "hf" and is_owner_model(name) and "trust_remote_code" not in opts:
+        spec = N.make_spec(kind, name, **opts, trust_remote_code=1)
     if kind == "spacy" and not os.path.exists(name) and re.fullmatch(r"[\w.-]+/[\w.-]+", name):
         path = snapshot_download(name, ignore_patterns=["*.whl"], token=N.hf_token())
         spec = spec.replace(name, path, 1)
@@ -66,12 +88,12 @@ if spaces is not None:
         """ZeroGPU вимагає хоча б одну GPU-функцію; інференс іде на CPU, квоту не витрачаємо."""
 
 
-def pseudonymize(text: str, mode: str = "full", ner: str = DEFAULT_NER, labels: str = ""):
+def pseudonymize(text: str, mode: str = "model_regex", ner: str = DEFAULT_NER, labels: str = ""):
     """Псевдонімізує текст судового рішення.
 
     Args:
         text: текст документа українською.
-        mode: full | model_regex | regex | model.
+        mode: model_regex | regex | model.
         ner: NER-модель: spacy:<repo або шлях> | hf:<repo>[?опції] | gliner:<repo>[?опції].
         labels: відповідність міток моделі типам через пробіл, напр. "LOC=АДРЕСА @pii"; "МІТКА=" вимикає мітку.
 
@@ -96,7 +118,7 @@ def pseudonymize(text: str, mode: str = "full", ner: str = DEFAULT_NER, labels: 
             raise gr.Error(f"Не вдалося завантажити модель {ner}: {type(e).__name__}: {e}")
         raw = adapter.predict([text])[0]
     spans = NP.process(N.map_labels(raw, label_map), text)
-    ann = R.annotate(text, spans, mode, TAGGER)
+    ann = R.annotate(text, spans, mode)
 
     highlighted, out, pos = [], [], 0
     for a in ann:
@@ -126,7 +148,8 @@ EXAMPLES = [
 with gr.Blocks(title="Псевдонімізація судових рішень") as demo:
     gr.Markdown(
         "## Псевдонімізація українських судових рішень\n"
-        "Правила (regex) + NER-модель для ОСОБА + CRF для НОМЕР / ІНФОРМАЦІЯ / АДРЕСА. "
+        "NER-модель + правила (regex) для ОСОБА, НОМЕР / ІНФОРМАЦІЯ / АДРЕСА. "
+        f"Моделі `{OWNER}/…` натреновані нами і знають усі чотири типи. "
         "Модель можна замінити на будь-яку з Hugging Face: `hf:` (token-classification), `gliner:` або `spacy:`. "
         "Код: [github.com/EnderLancer/anonimimizer](https://github.com/EnderLancer/anonimimizer)."
     )
@@ -134,7 +157,7 @@ with gr.Blocks(title="Псевдонімізація судових рішень
         with gr.Column(scale=3):
             text = gr.Textbox(label="Текст рішення", lines=14, max_lines=40)
             with gr.Row():
-                mode = gr.Radio([(v, k) for k, v in MODES.items()], value="full", label="Режим")
+                mode = gr.Radio([(v, k) for k, v in MODES.items()], value="model_regex", label="Режим")
             ner = gr.Dropdown(PRESETS, value=DEFAULT_NER, allow_custom_value=True, label="NER-модель",
                               info="тип:repo[?опції], напр. hf:org/model?aggregation=first&min_score=0.6. "
                                    "Перше завантаження нової моделі триває до кількох хвилин.")
