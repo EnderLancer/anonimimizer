@@ -2,7 +2,7 @@
 # Використовує gold-анотації test-набору ЛИШЕ для демонстрації (не для навчання).
 import json, re, sys
 sys.stdout.reconfigure(encoding='utf8')
-SRC='../data/test/test/court_cases.jsonl'
+SRC='../data/test/court_cases.jsonl'
 rows=[json.loads(l) for l in open(SRC,encoding='utf8')]
 def kind(p): return p.rsplit('_',1)[0]
 def link(anns, text):
