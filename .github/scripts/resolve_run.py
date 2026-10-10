@@ -32,13 +32,13 @@ SCENARIOS = {
     # перевірити, що модель завантажується й дає розумний вихід: 20 документів, хвилини
     "quick": {"shards": "2", "limit": "20", "larger": ""},
     # те саме, що standard, плюс базова лінія без моделі (regex)
-    "compare": {"modes": "regex,model,model_regex"},
+    "compare": {"modes": "regex,clean_model,model,model_regex"},
     # швидший інференс: int8-квантизація (лише hf) і більше паралельних jobs
     "fast": {"shards": "16", "ner_options": "quantize=1"},
     # усі режими й cosine similarity
-    "thorough": {"modes": "regex,model,model_regex", "cosine": "1"},
+    "thorough": {"modes": "regex,clean_model,model,model_regex", "cosine": "1"},
 }
-MODES = ("regex", "model", "model_regex")
+MODES = ("regex", "clean_model", "model", "model_regex")
 
 
 def fail(msg):
