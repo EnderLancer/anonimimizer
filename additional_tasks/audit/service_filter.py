@@ -145,12 +145,21 @@ COURT_ROLE_GAP = re.compile(
     r"(?:(?i:районного|міськрайонного|міського|окружного|апеляційного|"
     r"касаційного|верховного|господарського|адміністративного)\s+){1,3}"
     r"(?i:суду)"
-    rf"(?:\s+(?:{COURT_GEOGRAPHY}\s+){{1,2}}(?i:області)|\s+(?i:України))?"
+    rf"(?:\s+(?:{COURT_GEOGRAPHY}\s+){{1,2}}(?i:області)|\s+(?i:України)|"
+    r"\s+(?i:м|міста)\s+[А-ЯІЇЄҐ][а-яіїєґ-]+)?"
     r"[\s,:()—–-]*")
 COURT_CHAMBER_GAP = re.compile(
     r"[\s,:()—–-]+судової\s+палати\s+з\s+розгляду\s+"
     r"(?:цивільних|кримінальних|адміністративних|господарських)\s+справ\s*",
     re.I)
+PARLIAMENT_NAME = re.compile(
+    r"\bВерховн(?:а|ої|ій|у|ою)\s+Рад(?:а|и|і|у|ою)\s+України\b")
+EPONYM_PREFIX = re.compile(
+    r"\b(?i:кадетськ\w+\s+корпус|ліце\w*|університет\w*|"
+    r"інститут\w*|школ\w*|гімназі\w*)"
+    r"(?:[\s\"«»]+[А-ЯІЇЄҐ][а-яіїєґ’'ʼ-]+){0,8}"
+    r"[\s\"«»]+імені\s*$")
+COURT_CITY = re.compile(r"\bм\.\s*(?P<city>[А-ЯІЇЄҐ][а-яіїєґ’'ʼ-]+)")
 SUFFIX_GAP = re.compile(r"[\s,():—–-]*(?:(?:приватн\w*|державн\w*)\s+)?", re.I)
 LIST_GAP = re.compile(r"\s*[,;]\s*(?:(?:та|і)\s+)?", re.I)
 TOKENS = re.compile(r"[^\W\d_]+", re.U)
@@ -477,8 +486,22 @@ ROLE_LOOKALIKES = str.maketrans("iIpPcCoOaAeExX", "іІрРсСоОаАеЕхХ"
 def normalize_role_context(value):
     """Normalize a copy only: candidate offsets always refer to original text."""
     value = re.sub(r"(?<=\w)['`’ʼ](?=\w)", "", value.replace("|", " "))
+    # Published Ukrainian court titles sometimes contain Latin lookalikes.
+    # This copy is for context checks only, never candidate offsets or values.
     value = value.translate(ROLE_LOOKALIKES)
     return re.sub(r"\bм\.\s*", "м ", value, flags=re.I)
+
+
+def audit_source_names(text):
+    """Recover signature anchors without altering production detections."""
+    normalized = text.replace("`", "ʼ")
+    # A padded city can look like a surname followed by initials. Mask only
+    # explicitly labelled cities so the initials attach to the real surname.
+    for match in COURT_CITY.finditer(normalized):
+        a, b = match.span("city")
+        normalized = normalized[:a] + " " * (b - a) + normalized[b:]
+    return [{"start": s, "end": e, "value": text[s:e]}
+            for s, e, _ in persons(normalized)]
 
 
 def role_gap(value):
@@ -552,7 +575,12 @@ def mark_service_candidates(text, candidates):
     # Names matched in the source take precedence over model fragments that
     # can include titles, several people or the next paragraph.
     anchors = []
-    source_names = [{"start": s, "end": e, "value": text[s:e]} for s, e, _ in persons(text)]
+    source_names = audit_source_names(text)
+    public_names = [(*m.span(), "Назва Верховної Ради України")
+                    for m in PARLIAMENT_NAME.finditer(text)]
+    eponyms = [(c["start"], c["end"], "Ім’я у назві установи після «імені»")
+               for c in source_names
+               if EPONYM_PREFIX.search(text[max(0, c["start"] - 240):c["start"]])]
     for c in source_names + sorted(people, key=lambda c: -(c["end"] - c["start"])):
         if not any(c["start"] < a["end"] and a["start"] < c["end"] for a in anchors):
             anchors.append(c)
@@ -619,6 +647,12 @@ def mark_service_candidates(text, candidates):
     for c in candidates:
         c.update(excluded=False, exclusion_reason=None, role=None)
         s, e, kind, value = c["start"], c["end"], c["type"], c["value"]
+        if kind in ("ОСОБА", "ІНФОРМАЦІЯ"):
+            reason = next((r for a, b, r in public_names + eponyms
+                           if a <= s < e <= b), None)
+            if reason:
+                c.update(excluded=True, exclusion_reason=reason)
+                continue
         if kind == "ОСОБА":
             key = name_key(value)
             # Reuse the anchor's decision for partial NER/CRF names, so a

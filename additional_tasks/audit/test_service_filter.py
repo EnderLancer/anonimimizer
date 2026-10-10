@@ -106,6 +106,64 @@ class ServiceFilterTests(unittest.TestCase):
             with self.subTest(prefix=prefix):
                 self.assertFalse(detect(prefix + "Коваль Іван Іванович", ["Коваль Іван Іванович"])[0]["excluded"])
 
+    def test_institution_eponym_is_not_a_personal_occurrence(self):
+        text = ('з посиленою військово-фізичною підготовкою "Кадетський корпус" '
+                'імені І.Г.Харитоненка Державної прикордонної служби України')
+        name = "І.Г.Харитоненка"
+        self.assertTrue(detect(text, [name])[0]["excluded"])
+        self.assertTrue(detect(text, ["Харитоненка"], "ІНФОРМАЦІЯ")[0]["excluded"])
+        for prefix in ("від імені ", "Ліцей отримав заяву від імені ",
+                       "Ліцей допитав свідка "):
+            self.assertFalse(detect(prefix + name, [name])[0]["excluded"])
+        repeated = raw_candidates(text + "; свідок " + name)
+        self.assertEqual([c["excluded"] for c in repeated if c["type"] == "ОСОБА"], [True, False])
+        self.assertFalse(detect(text + " повідомив про заяву", [name + " Державної"])[0]["excluded"])
+
+    def test_parliament_name_with_wrong_model_label(self):
+        for name in ("Верховна Рада", "Верховної Ради", "Верховній Раді",
+                     "Верховну Раду", "Верховною Радою"):
+            text = "згода на обов`язковість яких надана " + name + " України."
+            for kind in ("ОСОБА", "ІНФОРМАЦІЯ"):
+                with self.subTest(name=name, kind=kind):
+                    self.assertTrue(detect(text, [name], kind)[0]["excluded"])
+        text = "Верховною Радою України заслухано Петренко Іван Іванович"
+        self.assertFalse(detect(text, ["Петренко Іван Іванович"])[0]["excluded"])
+        self.assertFalse(detect(text, ["Верховною Радою України заслухано"])[0]["excluded"])
+
+    def test_judge_with_latin_lookalikes_in_court_title(self):
+        text = ("Суддя Менського районного суду Чеpнiгiвської областi "
+                "Савченко О.А. pозглянувши матеpiали справи")
+        name = "Савченко О.А."
+        result = detect(text, [name])[0]
+        self.assertTrue(result["excluded"])
+        self.assertEqual(text[result["start"]:result["end"]], name)
+        self.assertFalse(detect("Відповідач — " + text, [name])[0]["excluded"])
+        prose = text.replace(name, "заслухав свідка " + name)
+        self.assertFalse(detect(prose, [name])[0]["excluded"])
+
+    def test_signature_list_continues_across_backtick_name(self):
+        text = ("Судді" + " " * 41 + "А.П. Корніюк\n\n" + " " * 48 +
+                "І.В. П`єнта\n\nО.І. Талалай")
+        names = ["А.П. Корніюк", "І.В. П`єнта", "О.І. Талалай"]
+        self.assertTrue(all(c["excluded"] for c in detect(text, names)))
+        # Even if the middle name is absent from detectors, it must remain
+        # an anchor so the last signature inherits the judges' role.
+        self.assertTrue(detect(text, [names[-1]])[0]["excluded"])
+        self.assertFalse(detect(text.replace("О.І. Талалай", "Свідок О.І. Талалай"), [names[-1]])[0]["excluded"])
+
+    def test_city_and_partial_initials_inside_model_candidate(self):
+        text = ("Суддя Першотравневого\n       районного суду м.Чернівці" +
+                " " * 40 + "О. І. Галичанський")
+        value = "Чернівці" + " " * 40 + "О. І."
+        for candidate in (value, "О. І. Галичанський", "Галичанський"):
+            with self.subTest(candidate=candidate):
+                result = detect(text, [candidate])[0]
+                self.assertTrue(result["excluded"])
+                self.assertEqual(text[result["start"]:result["end"]], candidate)
+                self.assertFalse(detect("Позивач — " + text, [candidate])[0]["excluded"])
+        self.assertTrue(next(c for c in raw_candidates(text) if c["value"] == value)["excluded"])
+        self.assertFalse(detect(text + " повідомив", [value + " Галичанський повідомив"])[0]["excluded"])
+
     def test_additional_participant_roles_and_cases(self):
         roles = ("Заявник", "заявника", "заявнику", "заявником", "заявники", "заявників",
                  "Заявниця", "заявниці", "заявницю", "заявницею",
@@ -652,7 +710,7 @@ class ServiceFilterTests(unittest.TestCase):
             path = Path(directory) / "review.html"
             write_report(path, {"metadata": {}, "documents": [{"text": text, "candidates": result}]})
             html = path.read_text()
-        self.assertIn('id="show-service"', html)
+        self.assertIn('id="data-kind"', html)
         self.assertIn('"excluded": true', html)
         self.assertIn(r"\u003c/script>", html)
 

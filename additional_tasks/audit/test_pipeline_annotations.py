@@ -105,6 +105,29 @@ class PipelineAnnotationTests(unittest.TestCase):
         self.assertFalse(any("ОСОБА_1" in c["value"] for c in result))
         self.assertTrue(any(c["value"] == "person@example.com" for c in result))
 
+    def test_reported_service_fragments_from_model(self):
+        examples = (
+            ('з посиленою військово-фізичною підготовкою "Кадетський корпус" імені '
+             'І.Г.Харитоненка Державної прикордонної служби України', 'І.Г.Харитоненка'),
+            ('згода на обов`язковість яких надана Верховною Радою України.', 'Верховною Радою'),
+            ('Суддя Менського районного суду Чеpнiгiвської областi Савченко О.А. '
+             'pозглянувши матеpiали справи', 'Савченко О.А.'),
+            ('Судді' + ' ' * 41 + 'А.П. Корніюк\n\n' + ' ' * 48 +
+             'І.В. П`єнта\n\nО.І. Талалай', 'О.І. Талалай'),
+            ('Суддя Першотравневого\n       районного суду м.Чернівці' +
+             ' ' * 40 + 'О. І. Галичанський', 'Чернівці' + ' ' * 40 + 'О. І.'),
+        )
+        for text, value in examples:
+            with self.subTest(value=value):
+                start = text.index(value)
+                ner = [EntitySpan(start, start + len(value), value, "ОСОБА", 0.99)]
+                audited = candidates(text, ner=ner, mode="model_regex")
+                self.assertTrue(audited)
+                self.assertTrue(all(c["excluded"] for c in audited), audited)
+                expected = run.annotate(text, ner, "model_regex")
+                self.assertEqual([{key: c[key] for key in ("start", "end", "pseudonym")}
+                                  for c in audited], expected)
+
     def test_new_court_signatures_are_service_names(self):
         examples = (
             ("Суддя Києво-Святошинського районного суду Київської області Омельченко Мирослава Миколаївна,", ["Омельченко Мирослава Миколаївна"]),
