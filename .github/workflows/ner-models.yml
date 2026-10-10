@@ -69,6 +69,7 @@ jobs:
       n_shards: ${{ steps.spec.outputs.n_shards }}
       limit: ${{ steps.spec.outputs.limit }}
       data: ${{ steps.spec.outputs.data }}
+      larger: ${{ steps.spec.outputs.larger }}
       cosine: ${{ steps.spec.outputs.cosine }}
       cosine_model: ${{ steps.spec.outputs.cosine_model }}
       fail_below: ${{ steps.spec.outputs.fail_below }}
@@ -96,6 +97,7 @@ jobs:
       - name: Prepare data
         env:
           TEST_DATA: ${{ steps.spec.outputs.data }}
+          LARGER: ${{ steps.spec.outputs.larger }}
           LIMIT: ${{ steps.spec.outputs.limit }}
         run: bash .github/scripts/prepare_data.sh
 
@@ -106,7 +108,7 @@ jobs:
           NER: ${{ steps.spec.outputs.ner }}
         run: |
           h() { sha256sum | cut -c1-16; }
-          echo "cache_key=ner-v1-$(printf '%s' "$NER" | h)-$(cat out/data.jsonl ner_adapters.py | h)" | tee -a "$GITHUB_OUTPUT"
+          echo "cache_key=ner-v1-$(printf '%s' "$NER" | h)-$(cat out/ner_input.jsonl ner_adapters.py | h)" | tee -a "$GITHUB_OUTPUT"
 
       - name: Restore NER cache
         id: restore
@@ -138,6 +140,7 @@ jobs:
         shard: ${{ fromJSON(needs.setup.outputs.shards) }}
     env:
       TEST_DATA: ${{ needs.setup.outputs.data }}
+      LARGER: ${{ needs.setup.outputs.larger }}
       LIMIT: ${{ needs.setup.outputs.limit }}
     steps:
       - uses: actions/checkout@v5
@@ -177,7 +180,7 @@ jobs:
           NER: ${{ needs.setup.outputs.ner }}
           SHARD: ${{ matrix.shard }}
           N_SHARDS: ${{ needs.setup.outputs.n_shards }}
-        run: python ner_adapters.py infer out/data.jsonl --ner "$NER" --shard "$SHARD/$N_SHARDS" --out "out/ner-part-$SHARD.json"
+        run: python ner_adapters.py infer out/ner_input.jsonl --ner "$NER" --shard "$SHARD/$N_SHARDS" --out "out/ner-part-$SHARD.json"
 
       - uses: actions/upload-artifact@v6
         with:
@@ -191,6 +194,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TEST_DATA: ${{ needs.setup.outputs.data }}
+      LARGER: ${{ needs.setup.outputs.larger }}
       LIMIT: ${{ needs.setup.outputs.limit }}
     steps:
       - uses: actions/checkout@v5
@@ -211,7 +215,7 @@ jobs:
       - name: Merge
         env:
           NER: ${{ needs.setup.outputs.ner }}
-        run: python ner_adapters.py merge out/data.jsonl --ner "$NER" parts/*.json
+        run: python ner_adapters.py merge out/ner_input.jsonl --ner "$NER" parts/*.json
 
       - uses: actions/upload-artifact@v6
         with:
@@ -239,6 +243,7 @@ jobs:
         mode: ${{ fromJSON(needs.setup.outputs.modes) }}
     env:
       TEST_DATA: ${{ needs.setup.outputs.data }}
+      LARGER: ${{ needs.setup.outputs.larger }}
       LIMIT: ${{ needs.setup.outputs.limit }}
       NER: ${{ needs.setup.outputs.ner }}
       MODE: ${{ matrix.mode }}
@@ -304,6 +309,14 @@ jobs:
             python data/evaluate.py out/data_fixed.jsonl out/submission.jsonl --json > out/result_fixed.json
             python data/evaluate.py out/data_fixed_open.jsonl out/submission.jsonl --json > out/result_fixed_open.json
           fi
+          # підвибірки train-parquet (їхній вихід NER порахований разом з основними даними): кожна оцінюється окремо
+          args=(); for l in $NER_LABELS; do args+=(--ner-label "$l"); done
+          for d in $LARGER; do
+            [ "$d" = "$TEST_DATA" ] && continue
+            name=$(basename "$d" .jsonl)
+            python run.py "$d" "out/submission_$name.jsonl" --mode "$MODE" --ner "$NER" "${args[@]}"
+            python data/evaluate.py "$d" "out/submission_$name.jsonl" --json > "out/result_$name.json"
+          done
           # текстовий звіт з готового result.json: без другого прогону оцінки (з cosine — повторного рахування ембедингів)
           report() { python -c 'import json, sys; sys.path.insert(0, "data"); import evaluate; evaluate.print_report(json.load(open(sys.argv[1], encoding="utf8")))' "$1"; }
           {
@@ -325,6 +338,15 @@ jobs:
               echo '```'
               echo '</details>'
             fi
+            for f in out/result_court_cases_larger*.json; do
+              [ -f "$f" ] || continue
+              echo "<details><summary>Larger data set <code>$(basename "$f" .json | sed 's/^result_//')</code></summary>"
+              echo
+              echo '```'
+              report "$f"
+              echo '```'
+              echo '</details>'
+            done
           } | tee -a "$GITHUB_STEP_SUMMARY"
           python - <<'EOF'
           import json, os, sys
@@ -344,6 +366,7 @@ jobs:
             out/result.json
             out/result_fixed.json
             out/result_fixed_open.json
+            out/result_court_cases_larger*.json
           if-no-files-found: ignore
 
   summary:
@@ -365,8 +388,8 @@ jobs:
           import glob, json, os
           types = ("ОСОБА", "АДРЕСА", "НОМЕР", "ІНФОРМАЦІЯ")
           print(f"## NER `{os.environ['NER']}`\n")
-          print("| Режим | **Бал** | " + " | ".join(types) + " | Strict F1 | Ризик ↓ | B³ F1 | Cosine | Бал (випр. розмітка) | Бал (випр., без масок держорганів) |")
-          print("|---" * (len(types) + 8) + "|")
+          print("| Режим | **Бал** | " + " | ".join(types) + " | Strict F1 | Ризик ↓ | B³ F1 | Cosine | Бал (випр. розмітка) | Бал (випр., без масок держорганів) | Бал (larger) | Бал (larger 2) |")
+          print("|---" * (len(types) + 10) + "|")
           for f in sorted(glob.glob("results/ner-evaluation-*/result.json")):
               mode = os.path.basename(os.path.dirname(f)).removeprefix("ner-evaluation-")
               r = json.load(open(f, encoding="utf8"))
@@ -378,5 +401,5 @@ jobs:
               fx, fx_open = gold("result_fixed.json"), gold("result_fixed_open.json")
               print(f"| {mode} | **{r['final_score']:.4f}** | " + " | ".join(f"{per[t]['f1']:.3f}" for t in types)
                     + f" | {r['ner_strict']['macro']['f1']:.4f} | {r['deanonymization_risk_by_name']:.4f}"
-                    + f" | {r['consistency_b3']['f1']:.4f} | {'' if cos is None else f'{cos:.4f}'} | {fx} | {fx_open} |")
+                    + f" | {r['consistency_b3']['f1']:.4f} | {'' if cos is None else f'{cos:.4f}'} | {fx} | {fx_open} | {gold('result_court_cases_larger_data_set.json')} | {gold('result_court_cases_larger_data_set_2.json')} |")
           EOF
