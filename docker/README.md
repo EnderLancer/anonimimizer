@@ -42,7 +42,7 @@ ONNX_QUANTIZE=0 docker/build.sh      # модель у fp32 замість int8 
 
 Модель за замовчуванням — `davidmelash/wechsel_base_v7_2026-10-09_r5_s43` (та сама, що в CI,
 змінна `NER_MODEL` репозиторію). Образ ~0,7 GB (int8-модель 125 MB; з fp32-моделлю ~1,4 GB),
-архів `docker save` ~0,2 GB.
+архів `docker save` 185 MB.
 
 Адаптер `onnx:` у `ner_adapters.py` працює і поза Docker: `python run.py cases.jsonl out.jsonl --ner onnx:тека`,
 де тека — вихід `docker/export_onnx.py` (model.onnx, config.json, tokenizer.json). Вихід збігається
@@ -88,7 +88,7 @@ docker run --rm --network none --memory 8g --cpus 4 --entrypoint python -v "$PWD
 | CPU | 4 ядра (ліміт контейнера), без GPU | без GPU |
 | Ліміт пам'яті контейнера | 8 GB | ≤ 8 GB |
 | Пік RSS процесу | 0,54 GB | |
-| Образ / архів `docker save` | 666 MB / ~180 MB | без викачування з мережі |
+| Образ / архів `docker save` | 666 MB / 185 MB | без викачування з мережі |
 | Модель в образі | 125 MB (int8 ONNX; fp32 — 496 MB) | |
 | Завантаження моделі | 0,8 с | |
 | Загальний час на тест | 286 с (4,8 хв) | ≤ 2 год |
