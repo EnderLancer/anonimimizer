@@ -20,3 +20,14 @@ ner_cache*.json
 
 # кеш виходу NER на тесті потрібен для запуску без моделі
 !ner_cache.json
+
+# data artifacts
+data/train/
+data/silver/
+data/silver_*/
+data/resources/
+!data/silver/REPORT.md
+!data/silver/audit/metrics.json
+datagen/.venv/
+train/.venv/
+train/runs/
