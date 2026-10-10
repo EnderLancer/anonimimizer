@@ -193,18 +193,20 @@ class HFTokenClassificationAdapter(NerAdapter):
     фрагмент шукається в тексті за word. Довгі тексти ріжуться на вікна, що вміщаються в модель: з fast-токенізатором
     по токенах (stride — перекриття в токенах), інакше по символах (max_chars, overlap).
     quantize=1 — динамічна int8-квантизація лінійних шарів: на CPU швидше в ~1,5–2 рази, точність може трохи змінитися.
+    trust_remote_code=1 — виконати код з репозиторію моделі (токенізатор LiBERTa у modern_liberta_*); лише для репозиторіїв, яким довіряєте.
     """
 
     def __init__(self, name: str, aggregation: str = "simple", min_score: float = 0.0, device: int | str | None = None,
                  max_chars: int = 1500, overlap: int = 200, batch_size: int = 8, join_spaces: int = 1,
-                 revision: str | None = None, stride: int = 64, quantize: int = 0, pipe=None):
+                 revision: str | None = None, stride: int = 64, quantize: int = 0, trust_remote_code: int = 0, pipe=None):
         if pipe is None:
             from transformers import pipeline
             # device=None у transformers означає cuda:0, якщо CUDA «доступна»; на ZeroGPU це падає поза @spaces.GPU.
             # За замовчуванням — CPU; GPU вмикається явно: &device=0.
             pipe = pipeline("token-classification", model=name, aggregation_strategy=aggregation,
                             device=-1 if device is None else device,
-                            revision=revision and str(revision), token=hf_token())
+                            revision=revision and str(revision), token=hf_token(),
+                            trust_remote_code=bool(trust_remote_code))
             if quantize:
                 import torch
                 pipe.model = torch.ao.quantization.quantize_dynamic(pipe.model, {torch.nn.Linear}, dtype=torch.qint8)
