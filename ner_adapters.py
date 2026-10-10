@@ -311,26 +311,74 @@ class HFTokenClassificationAdapter(NerAdapter):
         return normalize(text, raw, expand_words=True, min_score=self.min_score, join_spaces=self.join_spaces)
 
 
+def _piece_offsets(text: str, pieces: list[tuple[int, int, str]]) -> list[tuple[int, int]]:
+    """Позиції символів для шматків SentencePiece (begin, end, surface). Нові версії SentencePiece віддають позиції в
+    байтах, старі — в символах; це видно з surface. Пробіл на початку шматка («▁слово») у фрагмент не входить, як у
+    fast-токенізаторів. Шматок без surface бере позиції наступного. Те саме робить train/src/pseudo/tokenization.py."""
+    if any(text[b:e] != s for b, e, s in pieces):  # позиції в байтах
+        char_at, n = {}, 0
+        for i, ch in enumerate(text):
+            char_at[n] = i
+            n += len(ch.encode("utf-8"))
+        char_at[n] = len(text)
+        pieces = [(char_at[b], char_at[e], s) for b, e, s in pieces]
+    out, following = [], None
+    for b, e, s in reversed(pieces):
+        if b == e:
+            out.append(following or (b, e))
+            continue
+        lead = len(s) - len(s.lstrip())
+        span = (b + lead, e) if b + lead < e else (b, e)
+        out.append(span)
+        following = span
+    return out[::-1]
+
+
 class _OnnxTokenizer:
-    """Мінімум інтерфейсу transformers-токенізатора, який потрібен HFTokenClassificationAdapter, поверх tokenizers."""
+    """Мінімум інтерфейсу transformers-токенізатора, який потрібен HFTokenClassificationAdapter: fast-токенізатор
+    (tokenizer.json, бібліотека tokenizers) або SentencePiece (spm.model; так влаштовані моделі LiBERTa, чий
+    Python-токенізатор лежить у репозиторії моделі й не віддає позицій — тут вони беруться з SentencePiece,
+    код з репозиторію не виконується)."""
 
     def __init__(self, path: str):
-        from tokenizers import Tokenizer
-        self.backend_tokenizer = Tokenizer.from_file(os.path.join(path, "tokenizer.json"))
         cfg_file = os.path.join(path, "tokenizer_config.json")
         cfg = json.load(open(cfg_file, encoding="utf8")) if os.path.exists(cfg_file) else {}
         self.model_max_length = int(cfg.get("model_max_length") or 10 ** 30)
-        pad = cfg.get("pad_token")
-        pad = pad.get("content") if isinstance(pad, dict) else pad
-        self.pad_id = self.backend_tokenizer.token_to_id(pad) if pad else None
-        if self.pad_id is None:
-            self.pad_id = self.backend_tokenizer.token_to_id("<pad>") or self.backend_tokenizer.token_to_id("[PAD]") or 0
-        self._n_special = len(self.backend_tokenizer.encode("", add_special_tokens=True).ids)
+        name = lambda k, d: (cfg.get(k).get("content") if isinstance(cfg.get(k), dict) else cfg.get(k)) or d
+        self.backend_tokenizer = self.sp = None
+        if os.path.exists(os.path.join(path, "tokenizer.json")):
+            from tokenizers import Tokenizer
+            self.backend_tokenizer = Tokenizer.from_file(os.path.join(path, "tokenizer.json"))
+            pad = name("pad_token", None)
+            self.pad_id = self.backend_tokenizer.token_to_id(pad) if pad else None
+            if self.pad_id is None:
+                self.pad_id = self.backend_tokenizer.token_to_id("<pad>") or self.backend_tokenizer.token_to_id("[PAD]") or 0
+            self._n_special = len(self.backend_tokenizer.encode("", add_special_tokens=True).ids)
+        else:
+            import sentencepiece as spm
+            self.sp = spm.SentencePieceProcessor()
+            self.sp.Load(os.path.join(path, "spm.model"))
+            self.pad_id = self.sp.PieceToId(name("pad_token", "<pad>"))
+            self.cls_id = self.sp.PieceToId(name("cls_token", "<cls>"))
+            self.sep_id = self.sp.PieceToId(name("sep_token", "<sep>"))
+            self._n_special = 2
 
     def num_special_tokens_to_add(self) -> int:
         return self._n_special
 
+    def sp_encode(self, text: str) -> tuple[list[int], list[tuple[int, int]]]:
+        """Ідентифікатори шматків усього тексту (без спеціальних токенів) і позиції символів кожного."""
+        try:
+            proto = self.sp.encode(text, out_type="proto")
+        except (ValueError, TypeError):  # sentencepiece < 0.2.1
+            proto = self.sp.encode(text, out_type="immutable_proto")
+        pieces = list(proto.pieces)
+        return [p.id for p in pieces], _piece_offsets(text, [(p.begin, p.end, p.surface) for p in pieces])
+
     def __call__(self, text, add_special_tokens=True, **_):
+        if self.sp is not None:
+            ids = self.sp.encode(text)
+            return {"input_ids": [self.cls_id] + ids + [self.sep_id] if add_special_tokens else ids}
         return {"input_ids": self.backend_tokenizer.encode(text, add_special_tokens=add_special_tokens).ids}
 
 
@@ -351,10 +399,12 @@ class _OnnxPipe:
             opts.intra_op_num_threads = int(threads)
         self.session = ort.InferenceSession(os.path.join(path, file), opts, providers=["CPUExecutionProvider"])
         self.inputs = [i.name for i in self.session.get_inputs()]
-        self.enc = copy.deepcopy(self.tokenizer.backend_tokenizer)
-        self.enc.enable_padding(pad_id=self.tokenizer.pad_id, pad_token="<pad>")
-        if self.tokenizer.model_max_length < 10 ** 6:
-            self.enc.enable_truncation(self.tokenizer.model_max_length)
+        self.enc = None
+        if self.tokenizer.backend_tokenizer is not None:
+            self.enc = copy.deepcopy(self.tokenizer.backend_tokenizer)
+            self.enc.enable_padding(pad_id=self.tokenizer.pad_id, pad_token="<pad>")
+            if self.tokenizer.model_max_length < 10 ** 6:
+                self.enc.enable_truncation(self.tokenizer.model_max_length)
 
     def __call__(self, chunks: list[str], batch_size: int = 8) -> list[list[dict]]:
         out = []
@@ -362,11 +412,30 @@ class _OnnxPipe:
             out.extend(self._batch(chunks[i:i + batch_size]))
         return out
 
+    def _encode(self, chunks: list[str]):
+        """Для кожного вікна: ідентифікатори, маска уваги, позиції символів і ознака «звичайний токен»; доповнено до
+        найдовшого вікна пакета."""
+        if self.enc is not None:
+            encs = self.enc.encode_batch(chunks, add_special_tokens=True)
+            return ([e.ids for e in encs], [e.attention_mask for e in encs], [e.offsets for e in encs],
+                    [[a and not sp for a, sp in zip(e.attention_mask, e.special_tokens_mask)] for e in encs])
+        tok = self.tokenizer
+        rows = [tok.sp_encode(c) for c in chunks]
+        width = max(len(ids) for ids, _ in rows) + 2
+        ids, mask, offs, real = [], [], [], []
+        for i, o in rows:
+            pad = width - len(i) - 2
+            ids.append([tok.cls_id] + i + [tok.sep_id] + [tok.pad_id] * pad)
+            mask.append([1] * (len(i) + 2) + [0] * pad)
+            offs.append([(0, 0)] + o + [(0, 0)] * (pad + 1))
+            real.append([False] + [True] * len(i) + [False] * (pad + 1))
+        return ids, mask, offs, real
+
     def _batch(self, chunks: list[str]) -> list[list[dict]]:
         import numpy as np
-        encs = self.enc.encode_batch(chunks, add_special_tokens=True)
-        ids = np.array([e.ids for e in encs], dtype=np.int64)
-        mask = np.array([e.attention_mask for e in encs], dtype=np.int64)
+        all_ids, all_mask, all_offs, all_real = self._encode(chunks)
+        ids = np.array(all_ids, dtype=np.int64)
+        mask = np.array(all_mask, dtype=np.int64)
         feed = {"input_ids": ids}
         if "attention_mask" in self.inputs:
             feed["attention_mask"] = mask
@@ -378,9 +447,9 @@ class _OnnxPipe:
         probs /= probs.sum(-1, keepdims=True)
         pred = probs.argmax(-1)
         result = []
-        for b, e in enumerate(encs):
-            tokens = [(self.id2label[int(pred[b, t])], float(probs[b, t, pred[b, t]]), e.offsets[t][0], e.offsets[t][1])
-                      for t in range(len(e.ids)) if e.attention_mask[t] and not e.special_tokens_mask[t]]
+        for b in range(len(chunks)):
+            tokens = [(self.id2label[int(pred[b, t])], float(probs[b, t, pred[b, t]]), all_offs[b][t][0], all_offs[b][t][1])
+                      for t in range(len(all_ids[b])) if all_real[b][t]]
             result.append(self._group(chunks[b], tokens))
         return result
 
@@ -415,9 +484,10 @@ class _OnnxPipe:
 @register("onnx")
 class OnnxTokenClassificationAdapter(HFTokenClassificationAdapter):
     """Та сама token-classification модель у форматі ONNX через onnxruntime, без torch і transformers:
-    тека з model.onnx, config.json (id2label) і tokenizer.json (+ tokenizer_config.json), яку готує
-    docker/export_onnx.py. Вікна, межі слів і склеювання — як у hf; вихід збігається з
-    hf:...?aggregation=simple. Опції: min_score, join_spaces, stride, batch_size, file (назва .onnx), threads."""
+    тека з model.onnx, config.json (id2label) і tokenizer.json або spm.model (+ tokenizer_config.json), яку готує
+    docker/export_onnx.py. Вікна, межі слів і склеювання — як у hf; з fast-токенізатором вихід збігається з
+    hf:...?aggregation=simple. Моделі з SentencePiece (LiBERTa) ріжуться на вікна по символах, як і в hf, але позиції
+    сутностей точні (hf для них шукає сутність у тексті за словом). Опції: min_score, join_spaces, stride, batch_size, file (назва .onnx), threads."""
 
     def __init__(self, name: str, min_score: float = 0.0, max_chars: int = 1500, overlap: int = 200, batch_size: int = 8,
                  join_spaces: int = 1, stride: int = 64, file: str = "model.onnx", threads: int = 0):

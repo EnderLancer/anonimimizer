@@ -25,7 +25,7 @@ FROM python:${PYTHON}-slim AS export
 ARG ONNX_QUANTIZE
 ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN pip install torch --index-url https://download.pytorch.org/whl/cpu \
-    && pip install "transformers>=4.51,<6" onnx onnxruntime onnxscript
+    && pip install "transformers>=4.51,<6" onnx onnxruntime onnxscript sentencepiece protobuf
 COPY --from=weights /model /model
 COPY docker/export_onnx.py /export_onnx.py
 RUN python /export_onnx.py /model /onnx $([ "$ONNX_QUANTIZE" = 1 ] && echo --quantize) && ls -la /onnx

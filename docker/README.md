@@ -36,8 +36,9 @@ ONNX_QUANTIZE=0 docker/build.sh      # модель у fp32 замість int8 
 Те саме руками: `docker build -f docker/Dockerfile -t pseudonymizer .` і `docker save pseudonymizer -o pseudonymizer.tar`.
 Мережа потрібна лише під час збірки (pip і ваги моделі). Збірка має три стадії: ваги з Hugging Face ──►
 експорт у ONNX (`docker/export_onnx.py`: torch + transformers, logits ONNX звіряються з torch,
-за замовчуванням динамічна int8-квантизація ваг) ──► кінцевий образ лише з `onnxruntime`, `tokenizers`
-і `numpy`. Наприкінці збірки образ сам проганяє модель на одному реченні,
+за замовчуванням динамічна int8-квантизація ваг) ──► кінцевий образ лише з `onnxruntime`, `tokenizers`,
+`sentencepiece` і `numpy`. Підтримуються моделі з fast-токенізатором (`tokenizer.json`) і з SentencePiece
+(`spm.model`, моделі LiBERTa); код токенізатора з репозиторію моделі не виконується. Наприкінці збірки образ сам проганяє модель на одному реченні,
 тож зламаний образ не збереться.
 
 Модель за замовчуванням — `davidmelash/wechsel_base_v7_2026-10-09_r5_s43` (та сама, що в CI,
@@ -45,7 +46,7 @@ ONNX_QUANTIZE=0 docker/build.sh      # модель у fp32 замість int8 
 архів `docker save` 185 MB.
 
 Адаптер `onnx:` у `ner_adapters.py` працює і поза Docker: `python run.py cases.jsonl out.jsonl --ner onnx:тека`,
-де тека — вихід `docker/export_onnx.py` (model.onnx, config.json, tokenizer.json). Вихід збігається
+де тека — вихід `docker/export_onnx.py` (model.onnx, config.json, tokenizer.json або spm.model). Вихід збігається
 з `hf:` з `aggregation=simple`: групування токенів відтворено як у `transformers.pipeline`.
 
 ## Перевірка на тесті
@@ -125,6 +126,13 @@ docker run --rm --network none --memory 8g --cpus 4 --entrypoint python -v "$PWD
 (кореляція з кількістю символів 0,94), тому p99 і max припадають на довгі документи. На
 1 000 символів розкид менший (p50 199 мс, max 328 мс); найгірші значення тут у коротких
 документів (2,4–2,8 тис. символів), причину цього не досліджено.
+
+### Інша модель: ModernBERT-large
+
+`NER_MODEL=davidmelash/modern_liberta_large_w2048_v7large_2026-10-09_r4_s43 docker/build.sh`, ті самі умови
+й тест: 760 с (12,7 хв), пік пам'яті 1,06 GB, образ 1,13 GB (архів 366 MB, модель int8 411 MB),
+час на документ p50 3,05 с / p95 5,28 с / p99 5,92 с / max 8,90 с, бал 0,9068 на офіційному тесті
+(ризик за іменем 0,024). Повні таблиці: [`PRESENTATION_PERFORMANCE.md`](../PRESENTATION_PERFORMANCE.md).
 
 ## Файли
 
