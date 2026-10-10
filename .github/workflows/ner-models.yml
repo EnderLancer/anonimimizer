@@ -14,6 +14,7 @@
 #   fast      standard з int8-квантизацією (hf) і 16 jobs
 #   thorough  усі режими + cosine similarity
 # overrides перекриває сценарій: modes, shards (1–20), limit, data, cosine, cosine_model, fail_below, extra_pip,
+#   data=data/test/court_cases_larger_data_set.jsonl (або …_2.jsonl) оцінює на підвибірці train-parquet (500 док.);
 #   напр.: limit=50 shards=4 fail_below=85 extra_pip="sentencepiece protobuf"
 # ner_options — опції адаптера моделі (ner_adapters.py): revision, aggregation, min_score, labels, threshold, quantize…
 # Приватні моделі: секрет репозиторію HF_TOKEN (Settings → Secrets and variables → Actions) з токеном

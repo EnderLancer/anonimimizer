@@ -29,3 +29,6 @@ data/resources/
 datagen/.venv/
 train/.venv/
 train/runs/
+
+# повні конверсії train-parquet у схему тесту (підвибірки по 500 документів лежать у git)
+data/test/*_full.jsonl

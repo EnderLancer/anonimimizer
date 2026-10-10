@@ -40,6 +40,10 @@ env:
   # Кодифікатора ДСА захищають лише фізичних осіб, а офіційна розмітка маскує органи непослідовно
   FIXED_OPEN_DATA: data/test/court_cases_fixed_state_bodies_open.jsonl
 
+  # підвибірки (перші 500 документів) train-parquet у схемі тесту, див. datagen/scripts/parquet_to_court_cases.py;
+  # ner_cache.json їх не покриває, тому оцінюється лише режим regex (без NER-моделі)
+  LARGER_DATA: data/test/court_cases_larger_data_set.jsonl data/test/court_cases_larger_data_set_2.jsonl
+
 jobs:
   evaluate:
     name: Evaluate (${{ matrix.mode }})
@@ -128,6 +132,23 @@ jobs:
               sys.exit(f"Score {score:.2f}% is below the threshold {float(m):.2f}%")
           EOF
 
+      - name: Larger data sets (rules only)
+        if: matrix.mode == 'regex'
+        run: |
+          for d in $LARGER_DATA; do
+            name=$(basename "$d" .jsonl)
+            python run.py "$d" "out/submission_$name.jsonl" --mode regex
+            python data/evaluate.py "$d" "out/submission_$name.jsonl" --json > "out/result_$name.json"
+            {
+              echo "<details><summary>Larger data set <code>$d</code></summary>"
+              echo
+              echo '```'
+              python -c 'import json, sys; sys.path.insert(0, "data"); import evaluate; evaluate.print_report(json.load(open(sys.argv[1], encoding="utf8")))' "out/result_$name.json"
+              echo '```'
+              echo '</details>'
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+
       - name: Check committed results are up to date
         run: |
           if ! cmp -s out/submission.jsonl results/${{ matrix.mode }}.jsonl; then
@@ -143,4 +164,5 @@ jobs:
             out/result.json
             out/result_fixed.json
             out/result_fixed_open.json
+            out/result_court_cases_larger_data_set*.json
           if-no-files-found: ignore
