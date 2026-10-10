@@ -1,0 +1,6 @@
+{
+  "entities": [
+    {"text": "Амосов Микола", "type": "ОСОБА", "id": "p1"},
+    {"text": "Reiner Kofer", "type": "ОСОБА", "id": "p2"}
+  ]
+}

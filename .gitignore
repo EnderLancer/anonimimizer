@@ -29,3 +29,7 @@ data/resources/
 datagen/.venv/
 train/.venv/
 train/runs/
+
+# OOD-набір: задачі агентів і проміжні файли регенеруються
+data/ood/tasks*/
+data/ood/01_candidates.jsonl

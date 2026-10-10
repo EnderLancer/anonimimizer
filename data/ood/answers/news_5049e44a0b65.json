@@ -1,0 +1,8 @@
+{
+  "entities": [
+    {"text": "Олена Копиця", "type": "ОСОБА", "id": "p1"},
+    {"text": "050 339 33 34", "type": "НОМЕР", "kind": "phone"},
+    {"text": "olena.ogo.ua@gmail.com", "type": "ІНФОРМАЦІЯ", "kind": "email"},
+    {"text": "вулиця Шкільна, 2, Рівне, Рівненська область, 33000", "type": "АДРЕСА", "kind": "office"}
+  ]
+}
