@@ -37,16 +37,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [model, regex, model_regex, full]
+        mode: [model, regex, model_regex]
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-
-      - name: Install dependencies
-        run: pip install python-crfsuite
 
       - name: Add the out-of-domain NER cache
         if: matrix.mode != 'regex'

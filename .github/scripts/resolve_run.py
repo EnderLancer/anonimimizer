@@ -1,7 +1,7 @@
 """Налаштування запуску ner-models.yml: сценарій + overrides -> outputs для jobs.
 
-Змінні середовища: SCENARIO, KIND, MODEL, NER_OPTIONS (key=value&…), OVERRIDES (key=value через пробіл),
-GITHUB_OUTPUT, GITHUB_STEP_SUMMARY (необов'язково).
+Environment: SCENARIO, KIND, MODEL, DEFAULT_MODEL (for KIND=hf when MODEL is empty), NER_OPTIONS (key=value&…),
+OVERRIDES (space-separated key=value), GITHUB_OUTPUT, GITHUB_STEP_SUMMARY (optional).
 """
 import json
 import os
@@ -13,7 +13,7 @@ sys.path.insert(0, os.getcwd())
 import ner_adapters as N  # noqa: E402
 
 DEFAULTS = {
-    "modes": "model,model_regex,full",
+    "modes": "model,model_regex",
     "shards": "8",
     "limit": "",
     "data": "data/test/court_cases.jsonl",
@@ -24,18 +24,18 @@ DEFAULTS = {
     "ner_options": "",
 }
 SCENARIOS = {
-    # три режими з моделлю на всьому тесті
+    # два режими з моделлю на всьому тесті
     "standard": {},
     # перевірити, що модель завантажується й дає розумний вихід: 20 документів, хвилини
-    "quick": {"modes": "model,full", "shards": "2", "limit": "20"},
+    "quick": {"shards": "2", "limit": "20"},
     # те саме, що standard, плюс базова лінія без моделі (regex)
-    "compare": {"modes": "regex,model,model_regex,full"},
+    "compare": {"modes": "regex,model,model_regex"},
     # швидший інференс: int8-квантизація (лише hf) і більше паралельних jobs
     "fast": {"shards": "16", "ner_options": "quantize=1"},
     # усі режими й cosine similarity
-    "thorough": {"modes": "regex,model,model_regex,full", "cosine": "1"},
+    "thorough": {"modes": "regex,model,model_regex", "cosine": "1"},
 }
-MODES = ("regex", "model", "model_regex", "full")
+MODES = ("regex", "model", "model_regex")
 
 
 def fail(msg):
@@ -55,8 +55,10 @@ def resolve(env):
         cfg[k] = v
 
     kind, model = env["KIND"], env["MODEL"].strip()
+    if not model and kind == "hf":
+        model = env.get("DEFAULT_MODEL", "").strip()
     if not model:
-        fail("не задано модель")
+        fail("no model given (for type hf the repository variable NER_MODEL can supply it)")
     allowed = N.adapter_options(kind)
     opts = dict(parse_qsl(cfg["ner_options"]))                     # від сценарію: лише ті, що підходять типу моделі
     skipped = sorted(k for k in opts if k not in allowed)

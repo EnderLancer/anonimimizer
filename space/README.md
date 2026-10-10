@@ -16,17 +16,18 @@ models:
 
 # Псевдонімізація українських судових рішень
 
-Гібридне рішення: правила (regex) + NER-модель для ОСОБА + CRF для НОМЕР / ІНФОРМАЦІЯ / АДРЕСА.
+Гібридне рішення: NER-модель + правила (regex) для ОСОБА, НОМЕР / ІНФОРМАЦІЯ / АДРЕСА.
 Опис, метрики й код: [github.com/EnderLancer/anonimimizer](https://github.com/EnderLancer/anonimimizer).
 
 Space оновлюється автоматично з гілки `main` (GitHub Actions → **Deploy Space**); редагувати файли тут немає сенсу.
 
 NER-модель задається в інтерфейсі рядком `тип:repo[?опції]`:
 
-- `spacy:dchaplinsky/uk_ner_web_trf_13class` — за замовчуванням;
+- `hf:davidmelash/…` — наші моделі на всі чотири типи (список береться з акаунта на старті Space), за замовчуванням `hf:davidmelash/wechsel_base_v7_2026-10-09_r5_s43`;
+- `spacy:dchaplinsky/uk_ner_web_trf_13class` — spaCy-модель (лише ОСОБА);
 - `hf:<repo>?aggregation=first&min_score=0.6` — будь-яка token-classification модель;
 - `gliner:<repo>?labels=person,address&threshold=0.4` — GLiNER.
 
 Мітки моделі переводяться в типи полем «Мітки моделі -> типи» (`LOC=АДРЕСА`, `ORG=`, `@pii`).
 
-API: `gradio_client.Client("<space>").predict(text, "full", ner, labels, api_name="/pseudonymize")`.
+API: `gradio_client.Client("<space>").predict(text, "model_regex", ner, labels, api_name="/pseudonymize")`.

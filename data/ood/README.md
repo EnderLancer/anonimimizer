@@ -45,14 +45,14 @@
 ## Оцінка
 
 ```bash
-python run.py data/ood/ood_cases.jsonl results/ood_full.jsonl --mode full --ner hf:davidmelash/wechsel_base
-python data/evaluate_ood.py data/ood/ood_cases.jsonl results/ood_full.jsonl --bootstrap 500
-python data/evaluate_ood.py data/ood/ood_cases.jsonl results/ood_model.jsonl results/ood_full.jsonl --names model,full --by subset
+python run.py data/ood/ood_cases.jsonl results/ood_model_regex.jsonl --mode model_regex --ner hf:davidmelash/wechsel_base
+python data/evaluate_ood.py data/ood/ood_cases.jsonl results/ood_model_regex.jsonl --bootstrap 500
+python data/evaluate_ood.py data/ood/ood_cases.jsonl results/ood_model.jsonl results/ood_model_regex.jsonl --names model,model_regex --by subset
 ```
 
 `evaluate_ood.py` рахує метрики `evaluate.py` на всьому наборі й на кожній групі (`--by source`, `subset`,
 `origin`), а також хибні спрацювання на 1 000 символів у документах без сутностей типу, recall за підвидом
 (`kind`) і бутстреп-інтервал середнього F1. CI — окремий workflow `.github/workflows/evaluate-ood.yml` (основний `evaluate.yml` не змінено): перед запуском `data/ood/merge_ner_cache.py` дописує кеш spaCy-моделі `data/ood/spacy_ner.json` у `ner_cache.json` робочої копії, далі режими model / regex /
-model_regex / full і пише таблицю в summary; `ner-models.yml` приймає `data=data/ood/ood_cases.jsonl`.
+model_regex і пише таблицю в summary; `ner-models.yml` приймає `data=data/ood/ood_cases.jsonl`.
 
 Результати — у розділі «Поза доменом» головного README.
