@@ -31,3 +31,7 @@ data/resources/
 datagen/.venv/
 train/.venv/
 train/runs/
+
+# Local audit viewer indexes
+additional_tasks/audit/**/review-index.sqlite3
+additional_tasks/audit/**/review-index.building

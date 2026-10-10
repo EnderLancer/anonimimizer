@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 import predict_trf as P
 import run as pipeline
 from regex_persons import persons
+from additional_tasks.audit.generate_review import generate_report, write_report
 from additional_tasks.audit.service_filter import SERVICE_FILTER_VERSION, mark_service_candidates
 
 PLACEHOLDER = re.compile(r"(?:ОСОБА|АДРЕСА|НОМЕР|ІНФОРМАЦІЯ)_\d+")
@@ -115,19 +116,14 @@ def unique_entity_counts(candidates):
     return dict(Counter(kind for kind, _ in identities))
 
 
-def write_report(path, payload):
-    template = (HERE / "audit_review.html").read_text(encoding="utf8")
-    # Keep arbitrary decision text inert inside the embedded JSON script.
-    data = json.dumps(payload, ensure_ascii=False).replace("<", "\\u003c").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
-    path.write_text(template.replace("__AUDIT_DATA__", data), encoding="utf8")
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("src", nargs="?", type=Path, default=ROOT / "data/train/2024-court-decisions.parquet")
     parser.add_argument("--limit", type=int, default=500)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--out", type=Path, default=HERE / "out")
+    parser.add_argument("--report-format", choices=("auto", "embedded", "local"), default="local",
+                        help="local (default) loads pages via serve_review.py; embedded/auto are explicit legacy options")
     parser.add_argument("--mode", choices=("regex", "regex_crf", "full"), default="full")
     parser.add_argument("--candidate-source", choices=("pipeline", "raw"), default="pipeline",
                         help="Production annotations (default) or all raw detections for diagnostics")
@@ -190,8 +186,7 @@ def main():
                 "documents_with_candidates": sum(any(not c["excluded"] for c in r["candidates"]) for r in rows),
                 "documents_with_raw_candidates": sum(bool(r["candidates"]) for r in rows)}
     (args.out / "summary.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf8")
-    write_report(args.out / "review.html", {"metadata": metadata, "documents": rows})
-    print(f"Review: {(args.out / 'review.html').resolve()}")
+    generate_report(args.out, args.report_format)
 
 
 if __name__ == "__main__":
